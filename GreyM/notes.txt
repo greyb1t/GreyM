@@ -1,0 +1,3 @@
+TODO: Copy the relocations from Interpreter to the new protected pe because the switch tables need the relocations
+
+TODO: Find a better solution to find the default pe image base address, currently I am defining DLL in Interpreter main.h and hardcode the values
