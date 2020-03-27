@@ -298,6 +298,8 @@ void InitializeVmSection( PortableExecutable* interpreter_pe,
   // copy the relocations
   // NOTE: We still need this to relocate it to the default PE base address,
   // then use relocations to relocate it further
+  //
+  // We also need to further relocate it more by adding the section offset to all the values
   interpreter_pe->Relocate( base_address_delta + section_delta );
 
   // NOTE: When having a jump table in the interpreter, it has a pointer to the
@@ -431,6 +433,12 @@ void AddLoaderShellcodeRelocations(
     const auto delta_offset_from_reloc_block_va =
         vm_section_offset_to_relocate - reloc_block_virtual_address;
 
+    // We cannot add a relocation that has the offset 0, it was previously padding
+    // Please filter out the relocations to make sure they are not padding, we
+    // add the padding outselves and cannot use the one provided in the vector
+    // I THINK, NOT SURE THO
+    assert( delta_offset_from_reloc_block_va );
+
     Relocation relocation;
 #ifdef _WIN64
     relocation.type = IMAGE_REL_BASED_DIR64;
@@ -446,7 +454,13 @@ void AddLoaderShellcodeRelocations(
 
       new_relocations.clear();
 
-      reloc_block_virtual_address += 0x1000;
+      // If the next relocation offset is bigger than the allowed value, then we need to
+      // adjust the reloc block virtual address until the relocation fits the relocation block
+      while ( ( vm_section_offset_to_relocate - reloc_block_virtual_address ) >=
+              kHighestNumberFrom12Bits ) {
+        // aligned to 4k page (4096)
+        reloc_block_virtual_address += 0x1000;
+      }
 
       // refresh the offset for the new block
       relocation.offset =
@@ -556,6 +570,36 @@ PortableExecutable Protect( const PortableExecutable& original_pe ) {
 
   std::vector<uintptr_t>
       vm_section_loader_shellcode_image_base_fixup_for_relocations;
+
+  //////////////////////////////////////////////////////////////////////////
+
+  // Iterate all relocations of interpreter pe
+  // If the relocation is within the vmfun section, save it for later to relocate in the end
+
+  std::vector<uint32_t> relocate_this_is_section_offset;
+
+  const auto vm_fun_section_lol =
+      interpreter_pe.GetSectionHeaders().GetSectionByName(
+          VM_FUNCTIONS_SECTION_NAME );
+
+  interpreter_pe.EachRelocation( [&]( IMAGE_BASE_RELOCATION* reloc_block,
+                                      const uintptr_t rva, Relocation* reloc ) {
+    // We should not add relocations that are padding, we do that ourselves
+    if ( reloc->type == IMAGE_REL_BASED_ABSOLUTE ) {
+      return;
+    }
+
+    if ( section::IsRvaWithinSection( vm_fun_section_lol, rva ) ) {
+      //section::RvaToSectionOffset
+      const auto lol = section::RvaToSectionOffset( vm_fun_section_lol, rva );
+      vm_section_loader_shellcode_image_base_fixup_for_relocations.push_back(
+          lol );
+
+      relocate_this_is_section_offset.push_back( lol );
+    }
+  } );
+
+  //////////////////////////////////////////////////////////////////////////
 
   uint32_t total_virtualized_instructions = 0;
   uint32_t total_disassembled_instructions = 0;
@@ -898,7 +942,7 @@ PortableExecutable Protect( const PortableExecutable& original_pe ) {
   // have an entry in the relocation table
   // If we disable the dynamic base address, there is no need to relocate
   // anything in the PE :D
-  // new_pe.DisableASLR();
+  //new_pe.DisableASLR();
 
   auto new_pe_sections = new_pe.GetSectionHeaders();
 
@@ -954,6 +998,22 @@ PortableExecutable Protect( const PortableExecutable& original_pe ) {
     // correct location
     *reinterpret_cast<uint32_t*>( image_ptr + file_offset ) =
         loader_shellcode_offset - new_pe_vm_section->VirtualAddress;
+  }
+
+  for ( const uint32_t vm_section_interpreter_offset :
+        relocate_this_is_section_offset ) {
+    const auto rva_rva = section::SectionOffsetToRva(
+        new_pe_vm_section, vm_section_interpreter_offset );
+    const auto file_offset = new_pe_sections.RvaToFileOffset( rva_rva );
+    auto image_ptr = new_pe.GetPeImagePtr();
+
+    uint32_t loader_shellcode_offset =
+        *reinterpret_cast<uint32_t*>( image_ptr + file_offset );
+
+    // Add the virtual address for that specific section to make it point to the
+    // correct location
+    *reinterpret_cast<uint32_t*>( image_ptr + file_offset ) =
+        loader_shellcode_offset + new_pe_vm_section->VirtualAddress;
   }
 
   // NOTE: This is not fully tested, may cause issues
