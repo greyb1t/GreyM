@@ -104,9 +104,9 @@ PortableExecutable::PortableExecutable( const std::vector<uint8_t>& pe_data )
   nt_headers_ = peutils::GetNtHeaders( pe_data_ptr );
 }
 
-PortableExecutable::PortableExecutable( const PortableExecutable& pe2 )
+PortableExecutable::PortableExecutable( const PortableExecutable& rhs )
     : dos_headers_( nullptr ), nt_headers_( nullptr ) {
-  pe_data_ = pe2.pe_data_;
+  pe_data_ = rhs.pe_data_;
 
   const auto pe_data_ptr = &pe_data_[ 0 ];
 
@@ -115,7 +115,7 @@ PortableExecutable::PortableExecutable( const PortableExecutable& pe2 )
   nt_headers_ = peutils::GetNtHeaders( pe_data_ptr );
 }
 
-bool PortableExecutable::IsValidPortableExecutable() const {
+bool PortableExecutable::IsValid() const {
   if ( !dos_headers_ || !nt_headers_ )
     return false;
 
@@ -138,13 +138,13 @@ std::vector<Section> PortableExecutable::CopySections() const {
 
   for ( int i = 0; i < section_count; ++i ) {
     const auto section_header = &first_section[ i ];
-    sections.push_back( CopySection( section_header ) );
+    sections.push_back( CopySectionDeep( section_header ) );
   }
 
   return sections;
 }
 
-Section PortableExecutable::CopySection(
+Section PortableExecutable::CopySectionDeep(
     const IMAGE_SECTION_HEADER* section_header ) const {
   return Section( *section_header, pe_data_ );
 }

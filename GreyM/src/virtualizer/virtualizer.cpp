@@ -192,8 +192,7 @@ Shellcode CreateVirtualizedShellcode(
     const cs_insn& instruction,
     const VmOpcodes vm_opcode,
     const uint32_t vm_opcode_encyption_key,
-    const uint32_t relocation_count,
-    const std::array<uint32_t, 16>& relocations ) {
+    const std::vector<uintptr_t>& relocations_within_instruction ) {
   Shellcode shellcode;
 
   assert( vm_opcode != VmOpcodes::NO_OPCODE );
@@ -224,7 +223,27 @@ Shellcode CreateVirtualizedShellcode(
 
   // The below code assumes that an instruction cannot have 2 immediate values
   // or 2 memory values
+  /*
   for ( const auto relocation_rva : relocations ) {
+    for ( const auto& op : operands ) {
+      const auto& enc = instruction.detail->x86.encoding;
+
+      const auto delta = relocation_rva - instruction.address;
+
+      if ( delta == enc.disp_offset ) {
+        // reg offset is being relocated
+        relocated_disp = true;
+      } else if ( delta == enc.imm_offset ) {
+        // imm offset is being relocated
+        relocated_imm = true;
+      }
+    }
+  }
+  */
+
+  // The below code assumes that an instruction cannot have 2 immediate values
+  // or 2 memory values
+  for ( const auto relocation_rva : relocations_within_instruction ) {
     for ( const auto& op : operands ) {
       const auto& enc = instruction.detail->x86.encoding;
 

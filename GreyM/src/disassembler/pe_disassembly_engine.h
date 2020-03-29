@@ -42,7 +42,7 @@ struct AddressRange {
 
 class PeDisassemblyEngine {
  public:
-  PeDisassemblyEngine( const PortableExecutable& pe );
+  PeDisassemblyEngine( const PortableExecutable pe );
 
   // TFunc: void ( * )( const cs_insn& instruction, const uint8_t* code,
   // uintptr_t* custom_data );
@@ -103,6 +103,8 @@ class PeDisassemblyEngine {
   void AddDisassemblyPoint( const DisassemblyPoint& disasm_point );
 
  private:
+  const PortableExecutable pe_;
+
   csh disassembler_handle_;
 
   const uint8_t* code_;
@@ -122,16 +124,15 @@ class PeDisassemblyEngine {
   // keeps track of all disassembled instructions to avoid disassembling them
   // again
   // first: address, second: instruction size
-  std::unordered_map<uint64_t, SmallInstructionData> disassembled_instructions_;
+  std::unordered_map<uintptr_t, SmallInstructionData>
+      disassembled_instructions_;
 
   // represents an area/range that is data and not code
   // example: jump table, that is data and not code
   std::vector<AddressRange> data_ranges_;
 
-  const PortableExecutable& pe_;
   const uintptr_t pe_image_base_;
 
-  // const std::vector<IMAGE_SECTION_HEADER*> pe_section_headers_;
   const SectionHeaders pe_section_headers_;
   const IMAGE_SECTION_HEADER* pe_text_section_header_;
 };
@@ -251,8 +252,8 @@ void PeDisassemblyEngine::BeginDisassembling(
     current_instruction_code_ = code_;
 
     // has the instruction already been disassembled?
-    if ( ( disassembled_instructions_.find( address_ ) !=
-           disassembled_instructions_.end() ) ||
+    if ( ( disassembled_instructions_.find( static_cast<uintptr_t>(
+               address_ ) ) != disassembled_instructions_.end() ) ||
          IsAddressWithinDataSectionOfCode( address_ ) ) {
       // continue disassembling instructions from the saved redirection
       // instructions
@@ -306,8 +307,8 @@ void PeDisassemblyEngine::BeginDisassembling(
 
     SmallInstructionData dick( instruction->size, current_instruction_code_ );
 
-    disassembled_instructions_.insert(
-        std::make_pair( instruction->address, dick ) );
+    disassembled_instructions_.insert( std::make_pair(
+        static_cast<uintptr_t>( instruction->address ), dick ) );
   }
 
   // when finished

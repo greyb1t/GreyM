@@ -28,7 +28,7 @@ PortableExecutable Build( const std::vector<uint8_t>& header,
 
 class Section {
  public:
-  Section() = default;
+  Section() : section_header_{ 0 }, data_{} {}
 
   Section( const IMAGE_SECTION_HEADER& section_header,
            std::vector<uint8_t> pe_data );
@@ -44,6 +44,7 @@ class Section {
   const IMAGE_SECTION_HEADER& GetSectionHeader() const;
 
   std::vector<uint8_t>* GetData();
+  const std::vector<uint8_t>* GetData() const;
   uint32_t GetCurrentOffset() const;
 
  private:

@@ -35,23 +35,49 @@ class PortableExecutable {
 
  public:
   PortableExecutable() = delete;
-  PortableExecutable( const PortableExecutable& pe2 );
 
-  bool IsValidPortableExecutable() const;
+  // Copy constructor
+  PortableExecutable( const PortableExecutable& rhs );
+
+  bool IsValid() const;
 
   std::vector<Section> CopySections() const;
-  Section CopySection( const IMAGE_SECTION_HEADER* section_header ) const;
+  Section CopySectionDeep( const IMAGE_SECTION_HEADER* section_header ) const;
 
   SectionHeaders GetSectionHeaders() const;
 
   std::vector<Import> GetImports() const;
 
+  using EachRelocationCallback_t =
+      void ( * )( IMAGE_BASE_RELOCATION* reloc_block,
+                  uintptr_t rva,
+                  Relocation* reloc );
+
   // I previously used a std::function for the callback, but using a templated
   // function supports capturing variable in the lambda as well and has
   // extremely good performance compared to std::function
   // TFunc: void callback(IMAGE_BASE_RELOCATION *reloc_block, uintptr_t rva, Relocation* reloc)
-  template <typename TFunc>
+  template <typename TFunc = EachRelocationCallback_t>
   void EachRelocation( const TFunc& callback );
+
+  using EachRelocationConstCallback_t =
+      void ( * )( const IMAGE_BASE_RELOCATION* reloc_block,
+                  const uintptr_t rva,
+                  const Relocation* reloc );
+
+  template <typename TFuncConst = EachRelocationConstCallback_t>
+  void EachRelocationConst( const TFuncConst& callback ) const {
+    // This callback wrapped enforces the const part in the arguments of the callback
+    const auto callback_wrapper =
+        [=]( const IMAGE_BASE_RELOCATION* reloc_block, const uintptr_t rva,
+             const Relocation* reloc ) { callback( reloc_block, rva, reloc ); };
+
+    // Ugly as fuck, but recommended by Meyer according to stackoverflow lol
+    auto one = static_cast<const PortableExecutable&>( *this );
+    auto two = const_cast<PortableExecutable&>( one );
+
+    two.EachRelocation( callback_wrapper );
+  }
 
   std::vector<Export> GetExports() const;
 
@@ -120,3 +146,45 @@ void PortableExecutable::EachRelocation( const TFunc& callback ) {
         reinterpret_cast<size_t>( reloc_block ) + reloc_block->SizeOfBlock );
   }
 }
+
+//template <typename TFunc>
+//void PortableExecutable::EachRelocationConst( const TFunc& callback ) const {
+//  const auto pe_data_ptr = &pe_data_[ 0 ];
+//
+//  const auto sections = GetSectionHeaders();
+//
+//  const auto& reloc_directory =
+//      nt_headers_->OptionalHeader
+//          .DataDirectory[ IMAGE_DIRECTORY_ENTRY_BASERELOC ];
+//
+//  auto reloc_block = reinterpret_cast<IMAGE_BASE_RELOCATION*>(
+//      pe_data_ptr +
+//      sections.RvaToFileOffset( reloc_directory.VirtualAddress ) );
+//
+//  uint32_t relocation_size_read = 0;
+//
+//  // Iterate each relocation block
+//  while ( relocation_size_read < reloc_directory.Size ) {
+//    const DWORD reloc_list_count =
+//        ( reloc_block->SizeOfBlock - sizeof( IMAGE_BASE_RELOCATION ) ) /
+//        sizeof( WORD );
+//
+//    WORD* reloc_list =
+//        reinterpret_cast<WORD*>( reinterpret_cast<size_t>( reloc_block ) +
+//                                 sizeof( IMAGE_BASE_RELOCATION ) );
+//
+//    for ( size_t i = 0; i < reloc_list_count; ++i ) {
+//      const Relocation* reloc =
+//          reinterpret_cast<Relocation*>( &reloc_list[ i ] );
+//
+//      const auto rva = reloc->offset + reloc_block->VirtualAddress;
+//
+//      callback( reloc_block, rva, reloc );
+//    }
+//
+//    relocation_size_read += reloc_block->SizeOfBlock;
+//
+//    reloc_block = reinterpret_cast<IMAGE_BASE_RELOCATION*>(
+//        reinterpret_cast<size_t>( reloc_block ) + reloc_block->SizeOfBlock );
+//  }
+//}

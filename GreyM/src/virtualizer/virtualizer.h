@@ -13,8 +13,7 @@ Shellcode CreateVirtualizedShellcode(
     const cs_insn& instruction,
     const VmOpcodes vm_opcode,
     const uint32_t vm_opcode_encyption_key,
-    const uint32_t relocation_count,
-    const std::array<uint32_t, 16>& relocations );
+    const std::vector<uintptr_t>& relocations_within_instruction );
 
 Shellcode GetLoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
                                                 const VmOpcodes vm_opcode,

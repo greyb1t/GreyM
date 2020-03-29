@@ -41,6 +41,10 @@ std::vector<uint8_t>* Section::GetData() {
   return &data_;
 }
 
+const std::vector<uint8_t>* Section::GetData() const {
+  return &data_;
+}
+
 uint32_t Section::GetCurrentOffset() const {
   return data_.size();
 }
@@ -49,12 +53,12 @@ Section section::CreateEmptySection( const std::string& name,
                                      const DWORD characteristics ) {
   Section section;
 
-  // TODO: Consider adding an option to modify the characteristics to ones
-  // preference, but cannot bother atm...fock it
   section.section_header_.Characteristics = characteristics;
   // IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE |
   // IMAGE_SCN_CNT_CODE | IMAGE_SCN_CNT_INITIALIZED_DATA |
   // IMAGE_SCN_CNT_UNINITIALIZED_DATA;
+
+  assert( name.size() < 8 );
 
   memcpy( section.section_header_.Name, name.c_str(),
           sizeof( section.section_header_.Name ) );

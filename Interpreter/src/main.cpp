@@ -1,3 +1,20 @@
+/*
+  Visual Studio Project Settings
+
+  JUST MY CODE: NO
+  SECURITY CHECK: NO
+  SAFE EXCEPTION HANDLER: NO
+  BASIC RUNTIME CHECKS: DEFAULT
+  ENABLED ENHANCED INSTRUCTION SET: IA32 (required to avoid interpreter from
+                                          using SSE2, then we would need to save the XMM registers)
+
+  Protect with SEC_NO_CHANGE, then look if CreateSection was hooked or somehow
+  did not succeed by trying to manipulate the protected memory. If an error
+  occured while trying to change memory protection, then we're good.
+  // Look at this possible to thing detect protectino changes:
+  https://stackoverflow.com/questions/8004945/how-to-catch-a-memory-write-and-call-function-with-address-of-write
+*/
+
 #include <Windows.h>
 #include <cstdint>
 #include <stdio.h>
@@ -82,7 +99,7 @@ void WriteValueToDestinationSpecificSize( const uint8_t size,
   // We would have to copy the relocations from the interpreter inside this
   // section into new PE
 
-  /*
+#if 1
   switch ( size ) {
     case 1: {
       auto reg_dest_value_with_disp = ( uint8_t* )( write_dest_addr );
@@ -103,8 +120,7 @@ void WriteValueToDestinationSpecificSize( const uint8_t size,
     default:
       break;
   }
-  */
-
+#else
   if ( size == 1 ) {
     auto reg_dest_value_with_disp = ( uint8_t* )( write_dest_addr );
     *reg_dest_value_with_disp = value;
@@ -118,21 +134,23 @@ void WriteValueToDestinationSpecificSize( const uint8_t size,
     auto reg_dest_value_with_disp = ( uint64_t* )( write_dest_addr );
     *reg_dest_value_with_disp = value;
   }
+#endif
 }
 
 /*
-    Notes:
+  Notes:
 
-    Adding (__declspec(dllexport)) in order to export the function ensures that
-   the parameters won't be incorrectly optimized due to the way I am calling
-   this function inside of the code.
+  Adding (__declspec(dllexport)) in order to export the function ensures that
+  the parameters won't be incorrectly optimized due to the way I am calling
+  this function inside of the code.
 
-    Use __stdcall calling convention because I need the functionality to be able
-   to push the parameters to the function. When using __fastcall it uses the
-   registers immedietly expecting that you have specific registers with proper
-   values. On x64 the only calling convention is __fastcall, I hate it...fuck.
-  */
-
+  Use __stdcall calling convention because I need the functionality to be able
+  to push the parameters to the function. 
+  
+  When using __fastcall it uses the
+  registers immedietly expecting that you have specific registers with proper
+  values. On x64 the only calling convention is __fastcall, I hate it...fuck.
+*/
 #ifdef _WIN64
 __declspec( dllexport ) int32_t
     __fastcall VmInterpreter( uint8_t* code,
@@ -151,16 +169,14 @@ __declspec( dllexport ) int32_t
   uint32_t kTotalParametersBeforeEspPush = sizeof( uint32_t ) * 2;
 
 #ifdef _WIN64
-  kTotalParametersBeforeEspPush = /*16*/ 0;
+  kTotalParametersBeforeEspPush = 0;
 #endif
-
-  // for the sub and add before and after call
 
   // A value that describes the amount of stack we allocate before we call this interpreter in the loader shellcode
   // It is based on the sub esp, 0x100
   //                    add esp, 0x100
   // This is not required for x86, but I am still doing it for consistency on both x86 and x64
-  const auto interpreter_call_stack_allocation_space = 0x100 /*+ (0x16 * 8)*/;
+  const auto interpreter_call_stack_allocation_space = 0x100;
 
   // Read whole struct from stack in one read
   VM_CONTEXT* vm_context =
@@ -231,10 +247,10 @@ __declspec( dllexport ) int32_t
   // NOTE: Cannot use the nt_header->ImageBase to get default image base, it
   // gets relocated
 
-  switch ( vm_opcode ) {
-    case 0x90: {
-      break;
-    } break;
+  switch ( static_cast<VmOpcodes>( vm_opcode ) ) {
+    //case 0x90: {
+    //  break;
+    //} break;
 
     case VmOpcodes::MOV_REGISTER_MEMORY_REG_OFFSET: {
       // Read the next 4 bytes as uint32_t
@@ -481,27 +497,6 @@ __declspec( dllexport ) int32_t
 // Reset the code_seg, add code to normal .text section again
 #pragma code_seg()
 
-// VS OPTIONS
-// JUST MY CODE: NO
-// SECURITY CHECK: NO
-// SAFE EXCEPTION HANDLER: NO
-// BASIC RUNTIME CHECKS: DEFAULT
-// ENABLED ENHANCED INSTRUCTION SET: IA32 (required to avoid interpreter from
-// using SSE2, then we would need to save the XMM registers)
-
-/*
-  TODO:
-  Protect with SEC_NO_CHANGE, then look if CreateSection was hooked or somehow
-  did not succeed by trying to manipulate the protected memory. If an error
-  occured while trying to change memory protection, then we're good.
-  // Look at this possible to thing detect protectino changes:
-  https://stackoverflow.com/questions/8004945/how-to-catch-a-memory-write-and-call-function-with-address-of-write
-
-  ---
-
-
-*/
-
 BOOL WINAPI DllMain( HINSTANCE instance_handle,
                      DWORD reason,
                      LPVOID reserved ) {
@@ -513,9 +508,3 @@ BOOL WINAPI DllMain( HINSTANCE instance_handle,
 
   return 1;
 }
-
-/*
-  Where I left off:
-  I was going to fix x64, but, is it not possible to disable xmm registers on
-  the x64 build
-*/

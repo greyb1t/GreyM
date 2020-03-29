@@ -7,6 +7,6 @@ class PortableExecutable;
 
 namespace protector {
 
-PortableExecutable Protect( const PortableExecutable& pe );
+PortableExecutable Protect( const PortableExecutable pe );
 
 }  // namespace protector

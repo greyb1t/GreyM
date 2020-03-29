@@ -11,9 +11,6 @@ void PrintError( const std::string& message ) {
 }
 
 int main( int argc, char* argv[] ) {
-  // TODO: All the INT3 instructions between functions can be replaced with
-  // BOGUS code to catch of disassemblers.
-
   try {
     srand( static_cast<unsigned int>( time( 0 ) ) );
 
@@ -36,7 +33,7 @@ int main( int argc, char* argv[] ) {
 
     auto target_pe = pe::Open( target_file_data );
 
-    if ( target_pe.IsValidPortableExecutable() ) {
+    if ( target_pe.IsValid() ) {
       const auto new_protected_pe = protector::Protect( target_pe );
       if ( !fileio::WriteFileData(
                parent_dir_wide + TEXT( "Test Executable Out.exe" ),

@@ -2,7 +2,7 @@
 #include "section_headers.h"
 #include "section.h"
 
-IMAGE_SECTION_HEADER* SectionHeaders::GetSectionByName(
+IMAGE_SECTION_HEADER* SectionHeaders::FromName(
     const std::string& name ) const {
   for ( auto& section_header : headers ) {
     if ( strcmp( reinterpret_cast<const char*>( section_header->Name ),
@@ -14,7 +14,7 @@ IMAGE_SECTION_HEADER* SectionHeaders::GetSectionByName(
 }
 
 uintptr_t SectionHeaders::RvaToFileOffset( const uintptr_t rva ) const {
-  const auto section_header = GetSectionByRva( rva );
+  const auto section_header = FromRva( rva );
 
   if ( !section_header )
     return 0;
@@ -28,7 +28,7 @@ uintptr_t SectionHeaders::RvaToFileOffset( const uintptr_t rva ) const {
          ( rva - section_header->VirtualAddress );
 }
 
-IMAGE_SECTION_HEADER* SectionHeaders::GetSectionByRva(
+IMAGE_SECTION_HEADER* SectionHeaders::FromRva(
     const uintptr_t rva ) const {
   for ( auto& section_header : headers ) {
     if ( section::IsRvaWithinSection( section_header, rva ) ) {

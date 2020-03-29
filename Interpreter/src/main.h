@@ -21,7 +21,7 @@ constexpr uintptr_t DEFAULT_PE_BASE_ADDRESS = 0x400000;
 #endif
 #endif
 
-enum VmOpcodes : uint32_t {
+enum class VmOpcodes : uint32_t {
   MOV_REGISTER_IMMEDIATE = 0x74F91AA0,  // mov reg, 0x0
   MOV_REGISTER_REGISTER = 0xB9C115AB,  // mov reg, reg
   MOV_REGISTER_MEMORY_IMMEDIATE = 0x19BFE12B,  // mov eax, dword ptr [0x7d6610]

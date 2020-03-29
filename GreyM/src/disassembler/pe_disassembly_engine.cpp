@@ -2,17 +2,16 @@
 #include "pe_disassembly_engine.h"
 #include "../utils/safe_instruction.h"
 
-PeDisassemblyEngine::PeDisassemblyEngine( const PortableExecutable& pe )
-    : disassembler_handle_( 0 ),
+PeDisassemblyEngine::PeDisassemblyEngine( const PortableExecutable pe )
+    : pe_( pe ),
+      disassembler_handle_( 0 ),
       code_( 0 ),
       current_code_index_( 0 ),
       current_instruction_code_( nullptr ),
       code_buf_size_( 0 ),
       address_( 0 ),
-      pe_( pe ),
-      pe_section_headers_( pe.GetSectionHeaders() ),
-      pe_text_section_header_(
-          pe_section_headers_.GetSectionByName( ".text" ) ),
+      pe_section_headers_( pe_.GetSectionHeaders() ),
+      pe_text_section_header_( pe_section_headers_.FromName( ".text" ) ),
       pe_image_base_( pe_.GetNtHeaders()->OptionalHeader.ImageBase ) {
 #ifdef _WIN64
   const cs_mode mode = cs_mode::CS_MODE_64;
@@ -85,7 +84,7 @@ bool PeDisassemblyEngine::IsVTableOrFunction( const cs_x86_op& operand1,
                                               const cs_x86_op& operand2 ) {
   if ( operand1.type == x86_op_type::X86_OP_MEM &&
        operand2.type == x86_op_type::X86_OP_IMM ) {
-    const auto dest_section = pe_section_headers_.GetSectionByRva(
+    const auto dest_section = pe_section_headers_.FromRva(
         GetOperandRva( operand2, pe_image_base_ ) );
     // if the destination is in a section
     if ( dest_section != nullptr )
@@ -265,7 +264,7 @@ void PeDisassemblyEngine::ParseJumpTable( const cs_insn& instruction,
     //#endif
 
     const auto jump_table_dest_section =
-        pe_section_headers_.GetSectionByRva( jump_table_disasm_point.rva );
+        pe_section_headers_.FromRva( jump_table_disasm_point.rva );
 
     // is the jump table located inside any section?
     if ( jump_table_dest_section == nullptr )
@@ -290,7 +289,7 @@ void PeDisassemblyEngine::ParseJumpTable( const cs_insn& instruction,
 
 #ifdef _WIN64
     const auto item_dest_rva = item_dest_va;  // x64: item_dest_va is also rva,
-                                              // need not subtract image base
+        // need not subtract image base
 #else
     const auto item_dest_rva =
         item_dest_va - pe_image_base_;  // x86: item_dest_va is rva + image base
@@ -565,7 +564,7 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
   const bool is_ret = cs_insn_group( disassembler_handle_, &instruction,
                                      cs_group_type::CS_GRP_RET );
   const bool is_interrupt = cs_insn_group( disassembler_handle_, &instruction,
-                                     cs_group_type::CS_GRP_INT );
+                                           cs_group_type::CS_GRP_INT );
   const bool is_jump = cs_insn_group( disassembler_handle_, &instruction,
                                       cs_group_type::CS_GRP_JUMP );
   const bool is_call = cs_insn_group( disassembler_handle_, &instruction,
@@ -621,8 +620,7 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
       // continue on the next instruction
       return DisassemblyAction::kNextInstruction;
     }
-  } 
-  else if ( is_interrupt ) {
+  } else if ( is_interrupt ) {
     return DisassemblyAction::kNextDisassemblyPoint;
   } else {
     if ( instruction.address == 0x10F1A6 ) {
@@ -777,10 +775,11 @@ bool PeDisassemblyEngine::ContinueFromRedirectionInstructions() {
 }
 
 void PeDisassemblyEngine::ParseRDataSection() {
-  const auto rdata_section_header =
-      pe_section_headers_.GetSectionByName( ".rdata" );
+  const auto rdata_section_header = pe_section_headers_.FromName( ".rdata" );
 
-  assert( rdata_section_header != nullptr );
+  if ( rdata_section_header == nullptr ) {
+    throw std::runtime_error( ".rdata was not found" );
+  }
 
   // TODO: Check x64 if the function pointer size is 4 or 8 bits
 
