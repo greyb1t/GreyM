@@ -985,6 +985,31 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
                 &( *original_pe_text_section_data )[ text_section_offset ],
                 ins_data.instruction_size_ );
 
+        // Do this disgusting hack for now, change later
+        cs_insn temp_instruction;
+        temp_instruction.size = ins_data.instruction_size_;
+        temp_instruction.address = address;
+
+        // Get the relocations within the instruction, if any exists
+        const auto relocations_rva_within_instruction =
+            GetRelocationsWithinInstruction( temp_instruction,
+                                             original_pe_relocation_rvas );
+
+        // Remove the relocations from the remove-list
+        // In other words, restore the relocations that were previously removed
+        for ( const auto& reloc_rva : relocations_rva_within_instruction ) {
+          const auto it_result = std::find(
+              fixup_context.relocation_rvas_to_remove.cbegin(),
+              fixup_context.relocation_rvas_to_remove.cend(), reloc_rva );
+
+          const bool found =
+              it_result != fixup_context.relocation_rvas_to_remove.end();
+
+          if ( found ) {
+            fixup_context.relocation_rvas_to_remove.erase( it_result );
+          }
+        }
+
         char buf[ MAX_PATH ]{ 0 };
         sprintf_s( buf, "Resetting invalid instruction 0x%08I64x\n",
                    static_cast<uint64_t>( address ) );
