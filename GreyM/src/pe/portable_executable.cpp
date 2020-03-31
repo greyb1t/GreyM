@@ -128,7 +128,7 @@ bool PortableExecutable::IsValid() const {
   return true;
 }
 
-std::vector<Section> PortableExecutable::CopySections() const {
+std::vector<Section> PortableExecutable::CopySectionsDeep() const {
   const auto first_section = IMAGE_FIRST_SECTION( nt_headers_ );
   const auto section_count = nt_headers_->FileHeader.NumberOfSections;
 
@@ -161,12 +161,7 @@ SectionHeaders PortableExecutable::GetSectionHeaders() const {
     section_headers.push_back( &first_section[ i ] );
   }
 
-  // Wrap the section header inside a class that has helper functions to
-  // convenience =)
-  SectionHeaders section_headers_obj;
-  section_headers_obj.headers = section_headers;
-
-  return section_headers_obj;
+  return SectionHeaders( section_headers );
 }
 
 std::vector<Import> PortableExecutable::GetImports() const {
@@ -208,7 +203,8 @@ std::vector<Import> PortableExecutable::GetImports() const {
       assert( original_thunk );
 
       if ( IMAGE_SNAP_BY_ORDINAL( original_thunk->u1.Ordinal ) ) {
-        assert( false && "Handle ordinal" );
+        throw std::runtime_error(
+            "Import ordinal case has not yet been handled" );
       } else {
         // Read the import info in that thunk
         const auto import_name = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
@@ -216,9 +212,11 @@ std::vector<Import> PortableExecutable::GetImports() const {
             sections.RvaToFileOffset( original_thunk->u1.AddressOfData ) );
 
         Import import;
-        import.associated_module = associated_dll_name;
-        import.function_addr_rva = function_address;
-        import.function_name = import_name->Name;
+        {
+          import.associated_module = associated_dll_name;
+          import.function_addr_rva = function_address;
+          import.function_name = import_name->Name;
+        }
 
         imports.push_back( import );
       }
@@ -261,11 +259,11 @@ std::vector<Export> PortableExecutable::GetExports() const {
 
     const uint32_t function_addr = addresses[ ordinals[ i ] ];
 
-    Export exprt;
-    exprt.function_name = function_name;
-    exprt.function_addr_rva = function_addr;
+    Export e;
+    e.function_name = function_name;
+    e.function_addr_rva = function_addr;
 
-    exports.push_back( exprt );
+    exports.push_back( e );
   }
 
   return exports;
@@ -282,7 +280,7 @@ void PortableExecutable::DisableASLR() {
 void PortableExecutable::Relocate( const uintptr_t new_image_base_address ) {
   auto sections = GetSectionHeaders();
 
-  const auto image_ptr = const_cast<uint8_t*>( GetPeImagePtr() );
+  auto image_ptr = GetPeImagePtr();
 
   EachRelocation( [&]( IMAGE_BASE_RELOCATION* reloc_block, uintptr_t rva,
                        Relocation* reloc ) {

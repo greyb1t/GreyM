@@ -58,7 +58,6 @@ uintptr_t GetOperandRva( const cs_x86_op& operand,
   switch ( operand.type ) {
     case x86_op_type::X86_OP_IMM:
 #ifdef _WIN64
-      // assert( false && "see if this is for imm values as well in x64" );
       return static_cast<uintptr_t>( operand.imm );
 #else
       return static_cast<uintptr_t>( operand.imm ) - image_base;
@@ -574,13 +573,13 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
 
   if ( is_ret ) {
     // if the instruction is a return
-    return DisassemblyAction::kNextDisassemblyPoint;
+    return DisassemblyAction::NextDisassemblyPoint;
   } else if ( is_call || is_jump ) {
     if ( ins_detail.op_count == 1 ) {
       const auto& operand = ins_detail.operands[ 0 ];
 
       if ( operand.type == x86_op_type::X86_OP_IMM ) {
-        const auto dest_offset = operand.imm - instruction.address;
+        const auto dest_delta = operand.imm - instruction.address;
 
         // since the capstone api automatically increases the code and address
         // after disassembling the instruction, we have to calulcate the
@@ -589,39 +588,39 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
 
         DisassemblyPoint disasm_point;
         disasm_point.rva =
-            static_cast<uintptr_t>( instruction.address + dest_offset );
+            static_cast<uintptr_t>( instruction.address + dest_delta );
         disasm_point.code =
-            const_cast<uint8_t*>( instruction_code_ptr ) + dest_offset;
+            const_cast<uint8_t*>( instruction_code_ptr ) + dest_delta;
 
         AddDisassemblyPoint( disasm_point );
 
         if ( IsGuaranteedJump( instruction ) ) {
           // go immediately parse the jump destination
-          return DisassemblyAction::kNextDisassemblyPoint;
+          return DisassemblyAction::NextDisassemblyPoint;
         } else {
           // continue disassembling on the next instruction
-          return DisassemblyAction::kNextInstruction;
+          return DisassemblyAction::NextInstruction;
         }
       } else if ( IsJumpTable( instruction, current_instruction_code_,
                                instruction.address ) ) {
         ParseJumpTable( instruction, operand );
-        return DisassemblyAction::kNextDisassemblyPoint;
+        return DisassemblyAction::NextDisassemblyPoint;
       }
     } else {
       // invalid instruction, return ti another disassembly point
-      return DisassemblyAction::kNextDisassemblyPoint;
+      return DisassemblyAction::NextDisassemblyPoint;
       // assert( false );
     }
 
     if ( IsGuaranteedJump( instruction ) ) {
       // go immediately parse the jump destination
-      return DisassemblyAction::kNextDisassemblyPoint;
+      return DisassemblyAction::NextDisassemblyPoint;
     } else {
       // continue on the next instruction
-      return DisassemblyAction::kNextInstruction;
+      return DisassemblyAction::NextInstruction;
     }
   } else if ( is_interrupt ) {
-    return DisassemblyAction::kNextDisassemblyPoint;
+    return DisassemblyAction::NextDisassemblyPoint;
   } else {
     if ( instruction.address == 0x10F1A6 ) {
       int test = 0;
@@ -642,7 +641,7 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
                       "here in x64 for jump tables." );
 #endif
               ParseJumpTable( instruction, operand2 );
-              return DisassemblyAction::kNextDisassemblyPoint;
+              return DisassemblyAction::NextDisassemblyPoint;
             } else if ( IsVTableOrFunction( operand1, operand2 ) ) {
               // mov mem_op, imm_op
               // if is function
@@ -660,7 +659,7 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
                    IsFunction( dest_disasm_point.code,
                                dest_disasm_point.rva ) ) {
                 AddDisassemblyPoint( dest_disasm_point );
-                return DisassemblyAction::kNextInstruction;
+                return DisassemblyAction::NextInstruction;
               } else {
                 // if not a function, the maybe a vtable
 
@@ -756,7 +755,7 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
     }
   }
 
-  return DisassemblyAction::kNextInstruction;
+  return DisassemblyAction::NextInstruction;
 }
 
 bool PeDisassemblyEngine::ContinueFromRedirectionInstructions() {

@@ -48,8 +48,6 @@ int main( int argc, char* argv[] ) {
 
   } catch ( std::exception ex ) {
     PrintError( ex.what() );
-  } catch ( ... ) {
-    PrintError( "Unknown error occured" );
   }
 
   std::cin.get();

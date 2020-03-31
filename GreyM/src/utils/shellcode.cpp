@@ -24,3 +24,7 @@ int32_t Shellcode::GetNamedValueOffset( const std::wstring& value_name ) {
 void Shellcode::Reserve( const size_t capacity ) {
   buffer_.reserve( capacity );
 }
+
+const std::vector<uint8_t>& Shellcode::GetBuffer() const {
+  return buffer_;
+}

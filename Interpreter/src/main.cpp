@@ -248,9 +248,9 @@ __declspec( dllexport ) int32_t
   // gets relocated
 
   switch ( static_cast<VmOpcodes>( vm_opcode ) ) {
-    //case 0x90: {
-    //  break;
-    //} break;
+      //case 0x90: {
+      //  break;
+      //} break;
 
     case VmOpcodes::MOV_REGISTER_MEMORY_REG_OFFSET: {
       // Read the next 4 bytes as uint32_t
@@ -397,6 +397,28 @@ __declspec( dllexport ) int32_t
       *GetRegisterValuePointer( vm_context, reg_dest_offset ) =
           *GetRegisterValuePointer( vm_context, reg_dest_offset ) - sub_value;
       */
+    } break;
+
+    case VmOpcodes::LEA_REG_MEMORY_IMMEDIATE_RIP_RELATIVE: {
+      const auto dest_reg_offset = ReadValue<uint32_t>( &code );
+
+      const auto relative_data_addr = ReadValue<uintptr_t>( &code );
+
+      const auto absolute_addr_to_data = *reinterpret_cast<uintptr_t*>(
+          relative_data_addr + image_base_address );
+
+      const auto value = *reinterpret_cast<uintptr_t*>( absolute_addr_to_data );
+
+      *GetRegisterValuePointer( vm_context, dest_reg_offset ) = value;
+    } break;
+
+    case VmOpcodes::CALL_MEMORY_RIP_RELATIVE: {
+      const auto destination_addr = ReadValue<uintptr_t>( &code );
+
+      const auto absolute_addr_to_call = *reinterpret_cast<uintptr_t*>(
+          destination_addr + image_base_address );
+
+      PushValueToRealStack( vm_context, absolute_addr_to_call );
     } break;
 
     case VmOpcodes::CALL_MEMORY: {

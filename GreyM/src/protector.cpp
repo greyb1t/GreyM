@@ -695,7 +695,7 @@ PortableExecutable AssembleNewPe( const PortableExecutable& original_pe,
                                   const Section& new_text_section,
                                   const Section& vm_loader_section,
                                   const Section& virtualized_code_section ) {
-  auto new_sections = original_pe.CopySections();
+  auto new_sections = original_pe.CopySectionsDeep();
 
   // Replace the original text section with our modified one
   std::transform( new_sections.begin(), new_sections.end(),
@@ -790,7 +790,7 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
       GetRelocationRvas( original_pe );
 
   const auto EachInstructionCallback = [&]( const cs_insn& instruction,
-                                            const uint8_t* code ) {
+                                            const uint8_t* ) {
     //  BELOW CODE CAUSES BAD PERFORMANCE ISSUES, sprintf_s call is doing
     //  every instruction
     /*
@@ -802,7 +802,6 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
 
     const auto vm_opcode = virtualizer::GetVmOpcode( instruction );
 
-    // if is virtualizable
     if ( virtualizer::IsVirtualizeable( instruction, vm_opcode ) ) {
       if ( instruction.detail->x86.eflags != 0 ) {
         throw std::runtime_error(
@@ -837,32 +836,32 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
                 instruction, vm_opcode,
                 original_pe_nt_headers.OptionalHeader.ImageBase );
 
-        vm_code_loader_shellcode.ModifyValue( TEXT( "vm_opcode_encyption_key" ),
-                                              vm_opcode_encyption_key );
+        vm_code_loader_shellcode.ModifyVariable( VmOpcodeEncryptionKeyVariable,
+                                                 vm_opcode_encyption_key );
 
-        vm_code_loader_shellcode.ModifyValue<uintptr_t>(
-            TEXT( "VmCodeAddr" ), virtualized_code_offset );
+        vm_code_loader_shellcode.ModifyVariable<uintptr_t>(
+            VmCodeAddrVariable, virtualized_code_offset );
 
         const auto loader_shellcode_offset_before =
             vm_loader_section.GetCurrentOffset();
 
         const auto vm_core_function_shellcode_offset =
             vm_code_loader_shellcode.GetNamedValueOffset(
-                TEXT( "VmCoreFunction" ) );
+                VmCoreFunctionVariable );
 
         constexpr auto kCallInstructionSize = 5;
 
         // this value does not need to be fixed up as we did the others because
         // it it is a call to something in the SAME SECTION
-        vm_code_loader_shellcode.ModifyValue<uint32_t>(
-            TEXT( "VmCoreFunction" ),
+        vm_code_loader_shellcode.ModifyVariable<uint32_t>(
+            VmCoreFunctionVariable,
             interpreter_function_offset - loader_shellcode_offset_before -
                 kCallInstructionSize - vm_core_function_shellcode_offset + 1 );
 
         constexpr uint32_t kJmpInstructionSize = 5;
 
         const auto orig_addr_value_offset =
-            vm_code_loader_shellcode.GetNamedValueOffset( TEXT( "OrigAddr" ) );
+            vm_code_loader_shellcode.GetNamedValueOffset( OrigAddrVariable );
 
         const auto destination =
             static_cast<uint32_t>( instruction.address + instruction.size );
@@ -870,9 +869,8 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
         const auto origin = static_cast<uint32_t>(
             loader_shellcode_offset_before + orig_addr_value_offset );
 
-        vm_code_loader_shellcode.ModifyValue<uint32_t>(
-            TEXT( "OrigAddr" ),
-            destination - origin - kJmpInstructionSize + 1 );
+        vm_code_loader_shellcode.ModifyVariable<uint32_t>(
+            OrigAddrVariable, destination - origin - kJmpInstructionSize + 1 );
 
         const auto loader_shellcode_offset = vm_loader_section.AppendCode(
             vm_code_loader_shellcode.GetBuffer(),
@@ -886,15 +884,14 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
 
         const auto vm_code_addr_offset =
             loader_shellcode_offset +
-            vm_code_loader_shellcode.GetNamedValueOffset(
-                TEXT( "VmCodeAddr" ) );
+            vm_code_loader_shellcode.GetNamedValueOffset( VmCodeAddrVariable );
 
         fixup_context.offset_fixup_vm_section_to_virtualized_code_section
             .push_back( vm_code_addr_offset );
 
         const auto vm_var_section_shellcode_offset =
             vm_code_loader_shellcode.GetNamedValueOffset(
-                TEXT( "VmVarSection" ) );
+                VmVarSectionVariable );
 
         // add fixup for the image base argument for interpreter call
         fixup_context.vm_section_offsets_to_add_to_relocation_table.push_back(
@@ -905,12 +902,6 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
                 &original_text_section_header,
                 static_cast<uint32_t>( instruction.address ) );
 
-        //const auto text_section_data =
-        //    original_pe.GetPeData().begin() +
-        //    original_text_section_header.PointerToRawData;
-
-        // TODO: Add check to see whehter it is inside .text section
-
         const auto text_section_data = new_text_section.GetData()->data();
 
         const auto first = text_section_data + instruction_text_section_offset;
@@ -920,10 +911,11 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
 
         // Fill the whole instruction with random bytes
         std::transform( first, last, dest,
-                        []( uint8_t b ) { return /*RandomU8()*/ 0x90; } );
+                        []( uint8_t b ) { return RandomU8(); } );
 
         constexpr uint8_t kJmpOpcode = 0xE9;
 
+        // Write the jump
         *first = kJmpOpcode;
 
         const auto jmp_addr_offset = instruction_text_section_offset + 1;
@@ -938,11 +930,10 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
         const auto jmp_destination_as_uint8_array =
             reinterpret_cast<const uint8_t*>( &jmp_destination );
 
-        std::copy(
-            jmp_destination_as_uint8_array,
-            jmp_destination_as_uint8_array +
-                /*sizeof( jmp_destination_as_uint8_array )*/ sizeof( uint32_t ),
-            text_section_data + jmp_addr_offset );
+        // Write the jump destination
+        std::copy( jmp_destination_as_uint8_array,
+                   jmp_destination_as_uint8_array + sizeof( jmp_destination ),
+                   text_section_data + jmp_addr_offset );
 
         // add to vector to modify the value later because the sections have no
         // VirtualAddress yet
@@ -979,6 +970,7 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
         auto original_pe_text_section_data =
             original_text_section_copy.GetData();
 
+        // TODO: replace with std::copy
         // if the invalid instruction was virtualized, we reset it back here
         // below
         memcpy( text_section_data + text_section_offset,

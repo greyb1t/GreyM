@@ -4,12 +4,12 @@
 #include "peutils.h"
 
 Section::Section( const IMAGE_SECTION_HEADER& section_header,
-                  std::vector<uint8_t> pe_data )
+                  const std::vector<uint8_t> pe_data )
     : section_header_( section_header ) {
   // We use SizeOfRawData because it has to be aligned in the executable (file)
   data_ =
-      std::vector<uint8_t>( pe_data.begin() + section_header.PointerToRawData,
-                            pe_data.begin() + section_header.PointerToRawData +
+      std::vector<uint8_t>( pe_data.cbegin() + section_header.PointerToRawData,
+                            pe_data.cbegin() + section_header.PointerToRawData +
                                 section_header_.SizeOfRawData );
 }
 
@@ -23,6 +23,7 @@ uintptr_t Section::AppendCode( const std::vector<uint8_t>& code,
   section_header_.SizeOfRawData =
       peutils::AlignUp( data_.size(), file_alignment );
 
+  // Is this alignment required? Probably not.
   section_header_.Misc.VirtualSize =
       peutils::AlignUp( data_.size(), section_alignment );
 

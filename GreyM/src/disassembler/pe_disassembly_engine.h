@@ -2,19 +2,27 @@
 
 #include "../pe/portable_executable.h"
 
+struct SmallInstructionData {
+ public:
+  SmallInstructionData( uint16_t instruction_size, const uint8_t* code )
+      : instruction_size_( instruction_size ), code_ptr_( code ) {}
+
+  uint16_t instruction_size_;
+  const uint8_t* code_ptr_;
+};
+
 using tDisassemblingCallback = void ( * )( const cs_insn& instruction,
-                                           const uint8_t* code,
-                                           uintptr_t* custom_data );
+                                           const uint8_t* code );
 
 using tDisassemblingInvalidInstructionCallback =
-    void ( * )( const uint64_t address,
-                const uint16_t instruction_size,
-                uintptr_t* custom_data );
+    void ( * )( const uint64_t address, const SmallInstructionData ins_data );
 
 enum class DisassemblyAction {
-  kNextInstruction,  // disassemble the next instruction
-  kNextDisassemblyPoint,  // continue disassembling on a address from
-  // the saved stack
+  // Disassemble the next instruction
+  NextInstruction,
+
+  // Continue disassembling on a address from the saved stack
+  NextDisassemblyPoint,
 };
 
 struct DisassemblyPoint {
@@ -26,15 +34,6 @@ struct DisassemblyPoint {
   }
 };
 
-struct SmallInstructionData {
- public:
-  SmallInstructionData( uint16_t instruction_size, const uint8_t* code )
-      : instruction_size_( instruction_size ), code_ptr_( code ) {}
-
-  uint16_t instruction_size_;
-  const uint8_t* code_ptr_;
-};
-
 struct AddressRange {
   uintptr_t begin_address;
   uintptr_t end_address;
@@ -44,21 +43,20 @@ class PeDisassemblyEngine {
  public:
   PeDisassemblyEngine( const PortableExecutable pe );
 
-  // TFunc: void ( * )( const cs_insn& instruction, const uint8_t* code,
-  // uintptr_t* custom_data );
-  // TFunc2: void ( * )( const uint64_t address,
-  // const uint16_t instruction_size, uintptr_t* custom_data );
-  template <typename TFunc, typename TFunc2>
+  template <typename TFunc = tDisassemblingCallback,
+            typename TFunc2 = tDisassemblingInvalidInstructionCallback>
   void DisassembleFromEntrypoint( const TFunc& disassembly_callback,
                                   const TFunc2& invalid_instruction_callback );
 
  private:
-  template <typename TFunc, typename TFunc2>
+  template <typename TFunc = tDisassemblingCallback,
+            typename TFunc2 = tDisassemblingInvalidInstructionCallback>
   void BeginDisassembling( const TFunc& disassembly_callback,
                            const TFunc2& invalid_instruction_callback );
 
   // Only used for internal use for the invalid instruction checking part
-  template <typename TFunc, typename TFunc2>
+  template <typename TFunc = tDisassemblingCallback,
+            typename TFunc2 = tDisassemblingInvalidInstructionCallback>
   void BeginDisassemblingMinimal( const TFunc& disassembly_callback,
                                   const TFunc2& invalid_instruction_callback );
 
@@ -209,12 +207,12 @@ void PeDisassemblyEngine::BeginDisassemblingMinimal(
 
     // returns the next instruction to disassemble
     switch ( next_disasm_action ) {
-      case DisassemblyAction::kNextInstruction: {
+      case DisassemblyAction::NextInstruction: {
         // we do not need to change the code or address values because capstone
         // does it for us
       } break;
 
-      case DisassemblyAction::kNextDisassemblyPoint: {
+      case DisassemblyAction::NextDisassemblyPoint: {
         if ( !ContinueFromRedirectionInstructions() ) {
           finished = true;
           break;
@@ -234,10 +232,14 @@ void PeDisassemblyEngine::BeginDisassembling(
   bool finished = false;
 
   // allocate memory for one instruction and use this memory for all instruction
-  // to increate performance
+  // to increase performance
   cs_insn* instruction = cs_malloc( disassembler_handle_ );
 
   while ( !finished ) {
+    if ( address_ == 0x26E5 ) {
+      int test = 0;
+    }
+
     // are we outside the buffer?
     if ( ( code_buf_size_ - current_code_index_ ) <= 0 ) {
       // try to continue from the saved disassembly points
@@ -289,12 +291,12 @@ void PeDisassemblyEngine::BeginDisassembling(
 
     // returns the next instruction to disassemble
     switch ( next_disasm_action ) {
-      case DisassemblyAction::kNextInstruction: {
+      case DisassemblyAction::NextInstruction: {
         // we do not need to change the code or address values because capstone
         // does it for us
       } break;
 
-      case DisassemblyAction::kNextDisassemblyPoint: {
+      case DisassemblyAction::NextDisassemblyPoint: {
         if ( !ContinueFromRedirectionInstructions() ) {
           finished = true;
           break;

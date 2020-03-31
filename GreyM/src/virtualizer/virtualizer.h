@@ -4,6 +4,18 @@
 
 class Shellcode;
 
+const std::wstring VmOpcodeEncryptionKeyVariable =
+    TEXT( "vm_opcode_encyption_key" );
+
+const std::wstring VmCodeAddrVariable =
+    TEXT( "VmCodeAddr" );
+
+const std::wstring VmVarSectionVariable = TEXT( "VmVarSection" );
+
+const std::wstring OrigAddrVariable = TEXT( "OrigAddr" );
+
+const std::wstring VmCoreFunctionVariable = TEXT( "VmCoreFunction" );
+
 namespace virtualizer {
 
 bool IsVirtualizeable( const cs_insn& instruction, const VmOpcodes vm_opcode );

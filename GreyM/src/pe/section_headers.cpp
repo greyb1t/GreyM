@@ -4,7 +4,7 @@
 
 IMAGE_SECTION_HEADER* SectionHeaders::FromName(
     const std::string& name ) const {
-  for ( auto& section_header : headers ) {
+  for ( auto& section_header : headers_ ) {
     if ( strcmp( reinterpret_cast<const char*>( section_header->Name ),
                  name.c_str() ) == 0 )
       return section_header;
@@ -30,7 +30,7 @@ uintptr_t SectionHeaders::RvaToFileOffset( const uintptr_t rva ) const {
 
 IMAGE_SECTION_HEADER* SectionHeaders::FromRva(
     const uintptr_t rva ) const {
-  for ( auto& section_header : headers ) {
+  for ( auto& section_header : headers_ ) {
     if ( section::IsRvaWithinSection( section_header, rva ) ) {
       return section_header;
     }

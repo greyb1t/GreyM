@@ -31,9 +31,9 @@ class Section {
   Section() : section_header_{ 0 }, data_{} {}
 
   Section( const IMAGE_SECTION_HEADER& section_header,
-           std::vector<uint8_t> pe_data );
+           const std::vector<uint8_t> pe_data );
 
-  // AddCode returns the new code offset relative to the section beginning
+  // AppendCode returns the new code offset relative to the section beginning
   // in other words, if offset is 0, it is on the beginning of the section
   uintptr_t AppendCode( const std::vector<uint8_t>& code,
                         const uint32_t section_alignment,
@@ -45,6 +45,7 @@ class Section {
 
   std::vector<uint8_t>* GetData();
   const std::vector<uint8_t>* GetData() const;
+
   uint32_t GetCurrentOffset() const;
 
  private:
