@@ -29,123 +29,123 @@ bool IsOperandMemoryRegOffset( const cs_x86_op& operand ) {
 }
 
 int GetVmRegisterOffsetFromX86Reg( const x86_reg reg ) {
-#ifdef _WIN64
+  // The register variantes can be found on this link
+  // https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/x64-architecture
+
+  // Just checking to ensure there are not x64 registers when compiling in x86
+#ifndef _WIN64
   switch ( reg ) {
-    // CONTINUE HERE
-    // the x64 pe has different registers, they are not EAX, but instead RAX
-    // when i change to them, it crashes
-    // why? different sizes variables?
-    // https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/x64-architecture
-    // They change different parts of the registers, e.g. RAX changes the whole RAX register, EAX changes the lower 32 bits of the RAX register
-    // how can I handle this? Add a extra variable in the virtualized shellcode telling what kind of variable to change the register with?
-    // Probably goes hand in hand with the WriteValueToDestinationSpecificSize
-    // TODO: Call WriteValueToDestinationSpecificSize for all instructions
-    // that has the dword ptr or byte ptr or word ptr
-    //
-    // when fixed this, continue with LEA
-
-    switch ( reg ) {
-      case x86_reg::X86_REG_RAX:
-        return offsetof( VM_REGISTERS, eax );
-      case x86_reg::X86_REG_RBX:
-        return offsetof( VM_REGISTERS, ebx );
-      case x86_reg::X86_REG_RCX:
-        return offsetof( VM_REGISTERS, ecx );
-      case x86_reg::X86_REG_RDX:
-        return offsetof( VM_REGISTERS, edx );
-      case x86_reg::X86_REG_RBP:
-        return offsetof( VM_REGISTERS, ebp );
-      case x86_reg::X86_REG_RSI:
-        return offsetof( VM_REGISTERS, esi );
-      case x86_reg::X86_REG_RDI:
-        return offsetof( VM_REGISTERS, edi );
-
-        /*
-      case x86_reg::X86_REG_EAX:
-        return offsetof( VM_REGISTERS, eax );
-      case x86_reg::X86_REG_EBX:
-        return offsetof( VM_REGISTERS, ebx );
-      case x86_reg::X86_REG_ECX:
-        return offsetof( VM_REGISTERS, ecx );
-      case x86_reg::X86_REG_EDX:
-        return offsetof( VM_REGISTERS, edx );
-      case x86_reg::X86_REG_EBP:
-        return offsetof( VM_REGISTERS, ebp );
-      case x86_reg::X86_REG_ESI:
-        return offsetof( VM_REGISTERS, esi );
-      case x86_reg::X86_REG_EDI:
-        return offsetof( VM_REGISTERS, edi );
-        */
-      default:
-        break;
-    }
-      /*
     case x86_reg::X86_REG_RAX:
-      return offsetof( VM_REGISTERS, eax );
     case x86_reg::X86_REG_RBX:
-      return offsetof( VM_REGISTERS, ebx );
     case x86_reg::X86_REG_RCX:
-      return offsetof( VM_REGISTERS, ecx );
     case x86_reg::X86_REG_RDX:
-      return offsetof( VM_REGISTERS, edx );
-    case x86_reg::X86_REG_RBP:
-      return offsetof( VM_REGISTERS, ebp );
     case x86_reg::X86_REG_RSI:
-      return offsetof( VM_REGISTERS, esi );
     case x86_reg::X86_REG_RDI:
-      return offsetof( VM_REGISTERS, edi );
-      */
-      /*
-    case x86_reg::X86_REG_R15:
-      return offsetof( VM_REGISTERS, r15 );
-    case x86_reg::X86_REG_R14:
-      return offsetof( VM_REGISTERS, r14 );
-    case x86_reg::X86_REG_R13:
-      return offsetof( VM_REGISTERS, r13 );
-    case x86_reg::X86_REG_R12:
-      return offsetof( VM_REGISTERS, r12 );
-    case x86_reg::X86_REG_R11:
-      return offsetof( VM_REGISTERS, r11 );
-    case x86_reg::X86_REG_R10:
-      return offsetof( VM_REGISTERS, r10 );
-    case x86_reg::X86_REG_R9:
-      return offsetof( VM_REGISTERS, r9 );
-    case x86_reg::X86_REG_R8:
-      return offsetof( VM_REGISTERS, r8 );
-      */
+    case x86_reg::X86_REG_RBP:
+      assert( false );
     default:
       break;
-  }
-#else
-  switch ( reg ) {
-    case x86_reg::X86_REG_EAX:
-      return offsetof( VM_REGISTERS, eax );
-    case x86_reg::X86_REG_EBX:
-      return offsetof( VM_REGISTERS, ebx );
-    case x86_reg::X86_REG_ECX:
-      return offsetof( VM_REGISTERS, ecx );
-    case x86_reg::X86_REG_EDX:
-      return offsetof( VM_REGISTERS, edx );
-    case x86_reg::X86_REG_EBP:
-      return offsetof( VM_REGISTERS, ebp );
-    case x86_reg::X86_REG_ESI:
-      return offsetof( VM_REGISTERS, esi );
-    case x86_reg::X86_REG_EDI:
-      return offsetof( VM_REGISTERS, edi );
-    default:
-      break;
-  }
+  };
 #endif
+
+  switch ( reg ) {
+    case x86_reg::X86_REG_RAX:
+    case x86_reg::X86_REG_EAX:
+    case x86_reg::X86_REG_AX:
+    case x86_reg::X86_REG_AL:
+      return offsetof( VmRegisters, eax );
+    case x86_reg::X86_REG_RBX:
+    case x86_reg::X86_REG_EBX:
+    case x86_reg::X86_REG_BX:
+    case x86_reg::X86_REG_BL:
+      return offsetof( VmRegisters, ebx );
+    case x86_reg::X86_REG_RCX:
+    case x86_reg::X86_REG_ECX:
+    case x86_reg::X86_REG_CX:
+    case x86_reg::X86_REG_CL:
+      return offsetof( VmRegisters, ecx );
+    case x86_reg::X86_REG_RDX:
+    case x86_reg::X86_REG_EDX:
+    case x86_reg::X86_REG_DX:
+    case x86_reg::X86_REG_DL:
+      return offsetof( VmRegisters, edx );
+    case x86_reg::X86_REG_RSI:
+    case x86_reg::X86_REG_ESI:
+    case x86_reg::X86_REG_SI:
+    case x86_reg::X86_REG_SIL:
+      return offsetof( VmRegisters, esi );
+    case x86_reg::X86_REG_RDI:
+    case x86_reg::X86_REG_EDI:
+    case x86_reg::X86_REG_DI:
+    case x86_reg::X86_REG_DIL:
+      return offsetof( VmRegisters, edi );
+    case x86_reg::X86_REG_RBP:
+    case x86_reg::X86_REG_EBP:
+    case x86_reg::X86_REG_BP:
+    case x86_reg::X86_REG_BPL:
+      return offsetof( VmRegisters, ebp );
+
+#ifdef _WIN64
+    case x86_reg::X86_REG_R15:
+    case x86_reg::X86_REG_R15D:
+    case x86_reg::X86_REG_R15W:
+    case x86_reg::X86_REG_R15B:
+      return offsetof( VmRegisters, r15 );
+    case x86_reg::X86_REG_R14:
+    case x86_reg::X86_REG_R14D:
+    case x86_reg::X86_REG_R14W:
+    case x86_reg::X86_REG_R14B:
+      return offsetof( VmRegisters, r14 );
+    case x86_reg::X86_REG_R13:
+    case x86_reg::X86_REG_R13D:
+    case x86_reg::X86_REG_R13W:
+    case x86_reg::X86_REG_R13B:
+      return offsetof( VmRegisters, r13 );
+    case x86_reg::X86_REG_R12:
+    case x86_reg::X86_REG_R12D:
+    case x86_reg::X86_REG_R12W:
+    case x86_reg::X86_REG_R12B:
+      return offsetof( VmRegisters, r12 );
+    case x86_reg::X86_REG_R11:
+    case x86_reg::X86_REG_R11D:
+    case x86_reg::X86_REG_R11W:
+    case x86_reg::X86_REG_R11B:
+      return offsetof( VmRegisters, r11 );
+    case x86_reg::X86_REG_R10:
+    case x86_reg::X86_REG_R10D:
+    case x86_reg::X86_REG_R10W:
+    case x86_reg::X86_REG_R10B:
+      return offsetof( VmRegisters, r10 );
+    case x86_reg::X86_REG_R9:
+    case x86_reg::X86_REG_R9D:
+    case x86_reg::X86_REG_R9W:
+    case x86_reg::X86_REG_R9B:
+      return offsetof( VmRegisters, r9 );
+    case x86_reg::X86_REG_R8:
+    case x86_reg::X86_REG_R8D:
+    case x86_reg::X86_REG_R8W:
+    case x86_reg::X86_REG_R8B:
+      return offsetof( VmRegisters, r8 );
+#endif
+    default:
+      break;
+  }
 
   return -1;
 }
 
-uint32_t GetVmRegisterOffsetFromX86ImmediateReg( const cs_x86_op& operand ) {
-  return GetVmRegisterOffsetFromX86Reg( operand.reg );
+VmRegister GetVmRegisterOffsetFromX86ImmediateReg( const cs_x86_op& operand ) {
+  VmRegister vm_reg;
+  vm_reg.register_offset = GetVmRegisterOffsetFromX86Reg( operand.reg );
+  vm_reg.register_size = operand.size;
+  return vm_reg;
 }
 
-uint32_t GetVmRegisterOffsetFromX86MemoryReg( const cs_x86_op& operand ) {
-  return GetVmRegisterOffsetFromX86Reg( operand.mem.base );
+VmRegister GetVmRegisterOffsetFromX86MemoryReg( const cs_x86_op& operand ) {
+  VmRegister vm_reg;
+  vm_reg.register_offset = GetVmRegisterOffsetFromX86Reg( operand.mem.base );
+  vm_reg.register_size = operand.size;
+  return vm_reg;
 }
 
 VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
@@ -239,7 +239,7 @@ VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
       if ( operand1.type == x86_op_type::X86_OP_REG &&
            IsOperandMemoryRegOffset( operand2 ) ) {
         if ( operand2.mem.base == x86_reg::X86_REG_RIP ) {
-          //return VmOpcodes::LEA_REG_MEMORY_IMMEDIATE_RIP_RELATIVE;
+          return VmOpcodes::LEA_REG_MEMORY_IMMEDIATE_RIP_RELATIVE;
         }
       }
     } break;
@@ -332,7 +332,6 @@ Shellcode CreateVirtualizedShellcode(
 
 #ifdef _WIN64
       // Ensure it is a qword on 64 bit, bcuz that is only what the interpreter can handle
-      // call qword ptr ds:[0x00007FF648F61008]
       assert( operands[ 1 ].size == 8 );
 #else
       // Ensure it is a dword on 32 bit, bcuz that is only what the interpreter can handle
@@ -340,14 +339,21 @@ Shellcode CreateVirtualizedShellcode(
       assert( operands[ 1 ].size == 4 );
 #endif
 
-      const auto reg_dest_offset =
+      // Ensure both of the operand sizes are the same
+      assert( operands[ 0 ].size == operands[ 1 ].size );
+
+      const auto vm_reg =
           GetVmRegisterOffsetFromX86ImmediateReg( operands[ 0 ] );
 
-      if ( reg_dest_offset == -1 ) {
+      if ( vm_reg.register_offset == -1 ) {
         return {};
       }
 
-      shellcode.AddValue<uint32_t>( reg_dest_offset );
+      // i do not handle relocations for this instruction yet
+      assert( relocated_imm == false );
+      assert( relocated_disp == false );
+
+      shellcode.AddValue( vm_reg );
 
       const auto relative_data_addr = GetOperandMemoryValue( operands[ 1 ] );
 
@@ -422,16 +428,6 @@ Shellcode CreateVirtualizedShellcode(
     case VmOpcodes::CALL_IMMEDIATE: {
       assert( operands[ 0 ].type == x86_op_type::X86_OP_IMM );
 
-      #ifdef _WIN64
-      // Ensure it is a qword on 64 bit, bcuz that is only what the interpreter can handle
-      // call qword ptr ds:[0x00007FF648F61008]
-      assert( operands[ 0 ].size == 8 );
-#else
-      // Ensure it is a dword on 32 bit, bcuz that is only what the interpreter can handle
-      // call dword ptr ds:[0xF61008]
-      assert( operands[ 0 ].size == 4 );
-#endif
-
       const auto absolute_call_target_addr =
           GetOperandImmediateValue( operands[ 0 ] );
 
@@ -487,15 +483,17 @@ Shellcode CreateVirtualizedShellcode(
       assert( operands[ 0 ].type == x86_op_type::X86_OP_REG );
       assert( operands[ 1 ].type == x86_op_type::X86_OP_MEM );
 
-      uint32_t reg_struct_offset =
-          GetVmRegisterOffsetFromX86ImmediateReg( operands[ 0 ] );
+      // Ensure both of the operand sizes are the same
+      assert( operands[ 0 ].size == operands[ 1 ].size );
+
+      auto vm_reg = GetVmRegisterOffsetFromX86ImmediateReg( operands[ 0 ] );
 
       // If the register is not supported, return empty
-      if ( reg_struct_offset == -1 )
+      if ( vm_reg.register_offset == -1 )
         return {};
 
       // Push the register index to the virtualized code
-      shellcode.AddValue<uint32_t>( reg_struct_offset );
+      shellcode.AddValue( vm_reg );
 
       shellcode.AddValue( GetOperandMemoryValue( operands[ 1 ] ) );
     } break;
@@ -508,29 +506,31 @@ Shellcode CreateVirtualizedShellcode(
       assert( operands[ 0 ].type == x86_op_type::X86_OP_REG );
       assert( operands[ 1 ].type == x86_op_type::X86_OP_MEM );
 
-      uint32_t reg_dest_offset =
+      // Ensure both of the operand sizes are the same
+      assert( operands[ 0 ].size == operands[ 1 ].size );
+
+      auto vm_reg_dest =
           GetVmRegisterOffsetFromX86ImmediateReg( operands[ 0 ] );
 
       // If the register is not supported, return empty
-      if ( reg_dest_offset == -1 )
+      if ( vm_reg_dest.register_offset == -1 )
         return {};
 
       const auto& operand2 = operands[ 1 ];
 
-      const uint32_t reg_src_offset =
-          GetVmRegisterOffsetFromX86MemoryReg( operand2 );
+      const auto vm_reg_src = GetVmRegisterOffsetFromX86MemoryReg( operand2 );
 
       // If the register is not supported, return empty
-      if ( reg_src_offset == -1 )
+      if ( vm_reg_src.register_offset == -1 )
         return {};
 
       const auto reg_src_disp = GetOperandMemoryValue( operand2 );
 
       // Push the register offset to be changed to the virtualized code
-      shellcode.AddValue( reg_dest_offset );
+      shellcode.AddValue( vm_reg_dest );
 
       // Push the reg offset
-      shellcode.AddValue( reg_src_offset );
+      shellcode.AddValue( vm_reg_src );
 
       // Push the reg disp offset
       shellcode.AddValue( reg_src_disp );
@@ -540,33 +540,44 @@ Shellcode CreateVirtualizedShellcode(
       assert( operands[ 0 ].type == x86_op_type::X86_OP_REG );
       assert( operands[ 1 ].type == x86_op_type::X86_OP_REG );
 
-      uint32_t reg_struct_offset_dest =
+      // Ensure both of the operand sizes are the same
+      assert( operands[ 0 ].size == operands[ 1 ].size );
+
+      const auto vm_reg_dest =
           GetVmRegisterOffsetFromX86ImmediateReg( operands[ 0 ] );
-      uint32_t reg_struct_offset_src =
+      const auto vm_reg_src =
           GetVmRegisterOffsetFromX86ImmediateReg( operands[ 1 ] );
 
       // If the register is not supported, return empty
-      if ( reg_struct_offset_dest == -1 || reg_struct_offset_src == -1 )
+      if ( vm_reg_dest.register_offset == -1 ||
+           vm_reg_src.register_offset == -1 )
         return {};
 
       // Push the register index to the virtualized code
-      shellcode.AddValue( reg_struct_offset_dest );
-      shellcode.AddValue( reg_struct_offset_src );
+      shellcode.AddValue( vm_reg_dest );
+      shellcode.AddValue( vm_reg_src );
     } break;
 
     case VmOpcodes::MOV_REGISTER_IMMEDIATE: {
       assert( operands[ 0 ].type == x86_op_type::X86_OP_REG );
       assert( operands[ 1 ].type == x86_op_type::X86_OP_IMM );
 
-      uint32_t reg_struct_offset =
+      // Ensure both of the operand sizes are the same
+      assert( operands[ 0 ].size == operands[ 1 ].size );
+
+      if ( operands[ 0 ].size == 1 || operands[ 0 ].size == 2 ||
+           operands[ 0 ].size == 8 )
+        return {};
+
+      const auto vm_reg =
           GetVmRegisterOffsetFromX86ImmediateReg( operands[ 0 ] );
 
       // If the register is not supported, return empty
-      if ( reg_struct_offset == -1 )
+      if ( vm_reg.register_offset == -1 )
         return {};
 
       // Push the register index to the virtualized code
-      shellcode.AddValue( reg_struct_offset );
+      shellcode.AddValue( vm_reg );
       shellcode.AddValue( GetOperandImmediateValue( operands[ 1 ] ) );
     } break;
 
@@ -575,23 +586,27 @@ Shellcode CreateVirtualizedShellcode(
       assert( operands[ 0 ].type == x86_op_type::X86_OP_MEM );
       assert( operands[ 1 ].type == x86_op_type::X86_OP_REG );
 
+      // Ensure both of the operand sizes are the same
+      assert( operands[ 0 ].size == operands[ 1 ].size );
+
       const auto& dest_operand1 = operands[ 0 ];
       const auto& src_operand2 = operands[ 1 ];
 
-      uint32_t reg_dest_offset =
+      const auto vm_reg_dest =
           GetVmRegisterOffsetFromX86MemoryReg( dest_operand1 );
-      uint32_t reg_src_offset =
+      const auto vm_reg_src =
           GetVmRegisterOffsetFromX86ImmediateReg( src_operand2 );
 
       // If the register is not supported, return empty
-      if ( reg_dest_offset == -1 || reg_src_offset == -1 )
+      if ( vm_reg_dest.register_offset == -1 ||
+           vm_reg_src.register_offset == -1 )
         return {};
 
       // Push the register offset to be changed to the virtualized code
-      shellcode.AddValue( reg_dest_offset );
+      shellcode.AddValue( vm_reg_dest );
 
       // Push the source reg offset
-      shellcode.AddValue( reg_src_offset );
+      shellcode.AddValue( vm_reg_src );
 
       // Push the reg disp offset
       shellcode.AddValue( GetOperandMemoryValue( dest_operand1 ) );
@@ -601,25 +616,26 @@ Shellcode CreateVirtualizedShellcode(
       assert( operands[ 0 ].type == x86_op_type::X86_OP_MEM );
       assert( operands[ 1 ].type == x86_op_type::X86_OP_IMM );
 
+      // Ensure both of the operand sizes are the same
+      assert( operands[ 0 ].size == operands[ 1 ].size );
+
+      //assert( operands[ 0 ].size == 8 );
+
       const auto& dest_operand1 = operands[ 0 ];
       const auto& src_operand2 = operands[ 1 ];
 
-      const uint32_t reg_dest_offset =
+      const auto vm_reg_dest =
           GetVmRegisterOffsetFromX86MemoryReg( dest_operand1 );
 
       // If the register is not supported, return empty
-      if ( reg_dest_offset == -1 )
+      if ( vm_reg_dest.register_offset == -1 )
         return {};
 
-      shellcode.AddValue( reg_dest_offset );
+      shellcode.AddValue( vm_reg_dest );
 
       shellcode.AddValue( GetOperandImmediateValue( src_operand2 ) );
 
       shellcode.AddValue( GetOperandMemoryValue( dest_operand1 ) );
-
-      // Add the write size of the destination
-      // Example if it is "dword ptr", "word ptr" or "byte ptr"
-      shellcode.AddValue<uint32_t>( dest_operand1.size );
 
 // On x86, we do not support operand sizes of 8
 #ifndef _WIN64
@@ -638,22 +654,38 @@ Shellcode CreateVirtualizedShellcode(
     case VmOpcodes::PUSH_IMM: {
       assert( operands[ 0 ].type == x86_op_type::X86_OP_IMM );
 
+#ifdef _WIN64
+      // Ensure it is a qword on 64 bit, bcuz that is only what the interpreter can handle atm
+      assert( operands[ 0 ].size == 8 );
+#else
+      // Ensure it is a dword on 32 bit, bcuz that is only what the interpreter can handle atm
+      assert( operands[ 0 ].size == 4 );
+#endif
+
       shellcode.AddValue( GetOperandImmediateValue( operands[ 0 ] ) );
     } break;
 
     case VmOpcodes::PUSH_REGISTER_MEMORY_REG_OFFSET: {
       assert( operands[ 0 ].type == x86_op_type::X86_OP_MEM );
 
+#ifdef _WIN64
+      // Ensure it is a qword on 64 bit, bcuz that is only what the interpreter can handle atm
+      assert( operands[ 0 ].size == 8 );
+#else
+      // Ensure it is a dword on 32 bit, bcuz that is only what the interpreter can handle atm
+      assert( operands[ 0 ].size == 4 );
+#endif
+
       const auto& operand1 = operands[ 0 ];
-      uint32_t reg_dest_offset =
-          GetVmRegisterOffsetFromX86MemoryReg( operand1 );
+
+      const auto vm_reg_dest = GetVmRegisterOffsetFromX86MemoryReg( operand1 );
 
       // If the register is not supported, return empty
-      if ( reg_dest_offset == -1 )
+      if ( vm_reg_dest.register_offset == -1 )
         return {};
 
       // Push the register offset to be changed to the virtualized code
-      shellcode.AddValue( reg_dest_offset );
+      shellcode.AddValue( vm_reg_dest );
 
       // Push the reg disp offset
       shellcode.AddValue( GetOperandMemoryValue( operand1 ) );

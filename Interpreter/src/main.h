@@ -57,9 +57,14 @@ enum class VmOpcodes : uint32_t {
   NO_OPCODE = 0x0
 };
 
+struct VmRegister {
+  uint32_t register_offset;
+  uint32_t register_size;
+};
+
 using XMM = uint64_t[ 2 ];
 
-struct VM_REGISTERS {
+struct VmRegisters {
 #if _WIN64
   uintptr_t r15;
   uintptr_t r14;
@@ -91,14 +96,14 @@ struct VM_REGISTERS {
   uintptr_t pushfd;
 };
 
-struct VM_CONTEXT {
+struct VmContext {
   // esp is in here because it is added straight after the
   // pushes were allocated in loader code
   uintptr_t esp;
 
   // store registers after the virtual stack otherwise we'll
   // overwrite the pointer when we push on the virtual stack
-  VM_REGISTERS* registers;
+  VmRegisters* registers;
 };
 
 typedef struct _UNICODE_STRING {

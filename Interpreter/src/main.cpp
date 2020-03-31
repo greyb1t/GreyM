@@ -40,18 +40,18 @@ __declspec( dllexport ) int WINAPI EntryPoint( HINSTANCE instance,
 __declspec( dllexport ) void NTAPI
     TlsCallback( PVOID DllHandle, DWORD Reason, PVOID Reserved ) {}
 
-void PushValueToRealStack( VM_CONTEXT* vm_context, uintptr_t value ) {
+void PushValueToRealStack( VmContext* vm_context, uintptr_t value ) {
   const auto current_registers_address =
       reinterpret_cast<uintptr_t>( vm_context->registers );
 
   auto current_register_last_value_address =
-      current_registers_address + sizeof( VM_REGISTERS ) - sizeof( uintptr_t );
+      current_registers_address + sizeof( VmRegisters ) - sizeof( uintptr_t );
 
   // Make a copy of the registers
   const auto registers_copy = *vm_context->registers;
 
   // Get the new registers address on the stack (subtracted by sizeof(ptr))
-  auto new_registers = reinterpret_cast<VM_REGISTERS*>(
+  auto new_registers = reinterpret_cast<VmRegisters*>(
       current_registers_address - sizeof( uintptr_t ) );
 
   // Copy the registers to the new location
@@ -65,8 +65,8 @@ void PushValueToRealStack( VM_CONTEXT* vm_context, uintptr_t value ) {
   vm_context->esp -= sizeof( uintptr_t );
 }
 
-uintptr_t* GetRegisterValuePointer( VM_CONTEXT* vm_context,
-                                    uint32_t reg_offset ) {
+uintptr_t* GetPointerToRegister( const VmContext* vm_context,
+                                 const uint32_t reg_offset ) {
   uint8_t* register_struct_bytes = ( uint8_t* )vm_context->registers;
   return ( uintptr_t* )( register_struct_bytes + reg_offset );
 }
@@ -89,57 +89,52 @@ T ReadValue( uint8_t** code ) {
   return value;
 }
 
-// Used when an instruction has e.g. "mov dword ptr" or "mov byte ptr"
-void WriteValueToDestinationSpecificSize( const uint8_t size,
-                                          uint32_t write_dest_addr,
-                                          uint32_t value ) {
-  // NOTE: Using a switch causes a jump table to be created, but we cannot do it
-  // because since we added a dynamic base support, the interpreter is not being
-  // relocated to the new random base address
-  // We would have to copy the relocations from the interpreter inside this
-  // section into new PE
-
-#if 1
+void WriteSizedValue( const uint32_t size,
+                      const uintptr_t* write_dest,
+                      const uintptr_t value ) {
   switch ( size ) {
     case 1: {
-      auto reg_dest_value_with_disp = ( uint8_t* )( write_dest_addr );
-      *reg_dest_value_with_disp = value;
+      auto reg_dest_value_with_disp = ( uint8_t* )( write_dest );
+      *reg_dest_value_with_disp = ( uint8_t )value;
     } break;
     case 2: {
-      auto reg_dest_value_with_disp = ( uint16_t* )( write_dest_addr );
-      *reg_dest_value_with_disp = value;
+      auto reg_dest_value_with_disp = ( uint16_t* )( write_dest );
+      *reg_dest_value_with_disp = ( uint16_t )value;
     } break;
     case 4: {
-      auto reg_dest_value_with_disp = ( uint32_t* )( write_dest_addr );
-      *reg_dest_value_with_disp = value;
+      auto reg_dest_value_with_disp = ( uint32_t* )( write_dest );
+      *reg_dest_value_with_disp = ( uint32_t )value;
     } break;
     case 8: {
-      auto reg_dest_value_with_disp = ( uint64_t* )( write_dest_addr );
-      *reg_dest_value_with_disp = value;
+      auto reg_dest_value_with_disp = ( uint64_t* )( write_dest );
+      *reg_dest_value_with_disp = ( uint64_t )value;
     } break;
     default:
       break;
   }
-#else
-  if ( size == 1 ) {
-    auto reg_dest_value_with_disp = ( uint8_t* )( write_dest_addr );
-    *reg_dest_value_with_disp = value;
-  } else if ( size == 2 ) {
-    auto reg_dest_value_with_disp = ( uint16_t* )( write_dest_addr );
-    *reg_dest_value_with_disp = value;
-  } else if ( size == 4 ) {
-    auto reg_dest_value_with_disp = ( uint32_t* )( write_dest_addr );
-    *reg_dest_value_with_disp = value;
-  } else if ( size == 8 ) {
-    auto reg_dest_value_with_disp = ( uint64_t* )( write_dest_addr );
-    *reg_dest_value_with_disp = value;
+}
+
+void WriteSizedValueToRegister( const VmContext* vm_context,
+                                const VmRegister& vm_reg,
+                                const uintptr_t value ) {
+  const auto write_dest_ptr =
+      GetPointerToRegister( vm_context, vm_reg.register_offset );
+
+  if ( vm_reg.register_size == 4 ) {
+    // https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/x64-architecture
+    // Operations that output to a 32-bit subregister are automatically zero-extended
+    // to the entire 64-bit register. Operations that output to 8-bit or 16-bit
+    // subregisters are not zero-extended (this is compatible x86 behavior).
+
+    // If my understand of the statement above is correct, then the follwing line should
+    // zero-extend the whole 64 register on x64 and the whole x86 register on x86, but on x86 it does not matter
+    *( uintptr_t* )( write_dest_ptr ) = 0;
   }
-#endif
+
+  WriteSizedValue( vm_reg.register_size, write_dest_ptr, value );
 }
 
 /*
-  Notes:
-
   Adding (__declspec(dllexport)) in order to export the function ensures that
   the parameters won't be incorrectly optimized due to the way I am calling
   this function inside of the code.
@@ -179,17 +174,17 @@ __declspec( dllexport ) int32_t
   const auto interpreter_call_stack_allocation_space = 0x100;
 
   // Read whole struct from stack in one read
-  VM_CONTEXT* vm_context =
-      ( VM_CONTEXT* )( allocated_stack_addr + kTotalParametersBeforeEspPush +
-                       interpreter_call_stack_allocation_space );
+  VmContext* vm_context =
+      ( VmContext* )( allocated_stack_addr + kTotalParametersBeforeEspPush +
+                      interpreter_call_stack_allocation_space );
 
   // Initialize the pointer to the pushed registers
   vm_context->registers =
-      ( VM_REGISTERS* )( ( uintptr_t )( vm_context ) +
-                         VM_INTERPRETER_STACK_ALLOCATION_SIZE_BYTES +
-                         sizeof( vm_context->esp ) -
-                         offsetof( VM_CONTEXT, registers ) +
-                         sizeof( vm_context->registers ) );
+      ( VmRegisters* )( ( uintptr_t )( vm_context ) +
+                        VM_INTERPRETER_STACK_ALLOCATION_SIZE_BYTES +
+                        sizeof( vm_context->esp ) -
+                        offsetof( VmContext, registers ) +
+                        sizeof( vm_context->registers ) );
 
   /*
   const auto peb = GetCurrentPeb();
@@ -244,18 +239,11 @@ __declspec( dllexport ) int32_t
   const auto relocated_disp = ReadValue<uint8_t>( &code );
   const auto relocated_imm = ReadValue<uint8_t>( &code );
 
-  // NOTE: Cannot use the nt_header->ImageBase to get default image base, it
-  // gets relocated
-
   switch ( static_cast<VmOpcodes>( vm_opcode ) ) {
-      //case 0x90: {
-      //  break;
-      //} break;
-
     case VmOpcodes::MOV_REGISTER_MEMORY_REG_OFFSET: {
       // Read the next 4 bytes as uint32_t
-      const auto reg_dest_offset = ReadValue<uint32_t>( &code );
-      const auto reg_src_offset = ReadValue<uint32_t>( &code );
+      const auto vm_reg_dest = ReadValue<VmRegister>( &code );
+      const auto vm_reg_src = ReadValue<VmRegister>( &code );
 
       auto reg_src_disp = ReadValue<uintptr_t>( &code );
 
@@ -265,38 +253,42 @@ __declspec( dllexport ) int32_t
       }
 
       const auto reg_src_value =
-          *GetRegisterValuePointer( vm_context, reg_src_offset );
+          *GetPointerToRegister( vm_context, vm_reg_src.register_offset );
 
       const auto reg_src_value_with_disp = reg_src_value + reg_src_disp;
 
       const auto mov_value = *( uintptr_t* )reg_src_value_with_disp;
 
-      *GetRegisterValuePointer( vm_context, reg_dest_offset ) = mov_value;
+      WriteSizedValueToRegister( vm_context, vm_reg_dest, mov_value );
     } break;
 
     case VmOpcodes::MOV_REGISTER_MEMORY_IMMEDIATE: {
-      const auto reg_offset = ReadValue<uint32_t>( &code );
-      auto value = ReadValue<uintptr_t>( &code );
+      const auto vm_reg_dest = ReadValue<VmRegister>( &code );
+      auto value_src_addr = ReadValue<uintptr_t>( &code );
 
       if ( relocated_disp ) {
-        value = value - DEFAULT_PE_BASE_ADDRESS + image_base_address;
+        value_src_addr =
+            value_src_addr - DEFAULT_PE_BASE_ADDRESS + image_base_address;
       }
 
-      *GetRegisterValuePointer( vm_context, reg_offset ) =
-          *( uintptr_t* )( value );
+      const auto value = *( uintptr_t* )( value_src_addr );
+
+      WriteSizedValueToRegister( vm_context, vm_reg_dest, value );
     } break;
 
     case VmOpcodes::MOV_REGISTER_REGISTER: {
-      const auto reg_offset_dest = ReadValue<uint32_t>( &code );
-      const auto reg_offset_src = ReadValue<uint32_t>( &code );
+      const auto vm_reg_dest = ReadValue<VmRegister>( &code );
+      const auto vm_reg_src = ReadValue<VmRegister>( &code );
 
-      *GetRegisterValuePointer( vm_context, reg_offset_dest ) =
-          *GetRegisterValuePointer( vm_context, reg_offset_src );
+      const auto value =
+          *GetPointerToRegister( vm_context, vm_reg_src.register_offset );
+
+      WriteSizedValueToRegister( vm_context, vm_reg_dest, value );
     } break;
 
     case VmOpcodes::MOV_REGISTER_IMMEDIATE: {
       // Read the next 4 bytes as uint32_t
-      const auto reg_offset = ReadValue<uint32_t>( &code );
+      const auto vm_reg_dest = ReadValue<VmRegister>( &code );
 
       auto value = ReadValue<uintptr_t>( &code );
 
@@ -304,13 +296,12 @@ __declspec( dllexport ) int32_t
         value = value - DEFAULT_PE_BASE_ADDRESS + image_base_address;
       }
 
-      *GetRegisterValuePointer( vm_context, reg_offset ) = value;
+      WriteSizedValueToRegister( vm_context, vm_reg_dest, value );
     } break;
 
     case VmOpcodes::MOV_MEMORY_REG_OFFSET_REG: {
-      // Read the next 4 bytes as uint32_t
-      const auto reg_dest_offset = ReadValue<uint32_t>( &code );
-      const auto reg_src_offset = ReadValue<uint32_t>( &code );
+      const auto vm_reg_dest = ReadValue<VmRegister>( &code );
+      const auto vm_reg_src = ReadValue<VmRegister>( &code );
 
       auto reg_dest_disp = ReadValue<uintptr_t>( &code );
 
@@ -319,29 +310,32 @@ __declspec( dllexport ) int32_t
             reg_dest_disp - DEFAULT_PE_BASE_ADDRESS + image_base_address;
       }
 
+      // NOTE: Might be issues within this handling due to the different sizes of the read/writes of registers
+
       // Read the src register value
       const auto reg_src_value =
-          *GetRegisterValuePointer( vm_context, reg_src_offset );
+          *GetPointerToRegister( vm_context, vm_reg_src.register_offset );
 
       const auto reg_dest_value =
-          *GetRegisterValuePointer( vm_context, reg_dest_offset );
+          *GetPointerToRegister( vm_context, vm_reg_dest.register_offset );
 
       auto reg_dest_value_with_disp =
           ( uintptr_t* )( reg_dest_value + reg_dest_disp );
 
-      *reg_dest_value_with_disp = reg_src_value;
+      WriteSizedValue( vm_reg_dest.register_size, reg_dest_value_with_disp,
+                       reg_src_value );
     } break;
 
     case VmOpcodes::MOV_MEMORY_REG_OFFSET_IMM: {
       // Example 1: mov dword ptr [eax + 0x7d765c], 2
       // Example 2: mov dword ptr [ebp - 0x20], 0x7d7268
 
-      const auto reg_dest_offset = ReadValue<uint32_t>( &code );
+      // mov [reg + 0x0], imm
+
+      const auto vm_reg_dest = ReadValue<VmRegister>( &code );
 
       auto source_value = ReadValue<uintptr_t>( &code );
       auto reg_dest_disp = ReadValue<uintptr_t>( &code );
-
-      const auto dest_size = ReadValue<uint32_t>( &code );
 
       if ( relocated_disp ) {
         reg_dest_disp =
@@ -351,14 +345,14 @@ __declspec( dllexport ) int32_t
             source_value - DEFAULT_PE_BASE_ADDRESS + image_base_address;
       }
 
+      // NOTE: Might be issues within this handling due to the different sizes of the read/writes of registers
+
       const auto reg_dest_value =
-          *GetRegisterValuePointer( vm_context, reg_dest_offset );
+          *GetPointerToRegister( vm_context, vm_reg_dest.register_offset );
 
-      // TODO: Call WriteValueToDestinationSpecificSize for all instructions
-      // that has the dword ptr or byte ptr or word ptr
+      const auto dest_ptr = ( uintptr_t* )( reg_dest_value + reg_dest_disp );
 
-      WriteValueToDestinationSpecificSize(
-          dest_size, reg_dest_value + reg_dest_disp, source_value );
+      WriteSizedValue( vm_reg_dest.register_size, dest_ptr, source_value );
     } break;
 
     case VmOpcodes::SUB_REGISTER_IMMEDIATE: {
@@ -400,16 +394,15 @@ __declspec( dllexport ) int32_t
     } break;
 
     case VmOpcodes::LEA_REG_MEMORY_IMMEDIATE_RIP_RELATIVE: {
-      const auto dest_reg_offset = ReadValue<uint32_t>( &code );
+      const auto vm_reg_dest = ReadValue<VmRegister>( &code );
 
       const auto relative_data_addr = ReadValue<uintptr_t>( &code );
 
-      const auto absolute_addr_to_data = *reinterpret_cast<uintptr_t*>(
-          relative_data_addr + image_base_address );
+      const auto absolute_addr_to_data =
+          relative_data_addr + image_base_address;
 
-      const auto value = *reinterpret_cast<uintptr_t*>( absolute_addr_to_data );
-
-      *GetRegisterValuePointer( vm_context, dest_reg_offset ) = value;
+      WriteSizedValueToRegister( vm_context, vm_reg_dest,
+                                 absolute_addr_to_data );
     } break;
 
     case VmOpcodes::CALL_MEMORY_RIP_RELATIVE: {
@@ -468,7 +461,10 @@ __declspec( dllexport ) int32_t
     } break;
 
     case VmOpcodes::PUSH_REGISTER_MEMORY_REG_OFFSET: {
-      const auto reg_src_offset = ReadValue<uint32_t>( &code );
+      // TODO: Consider handling different sizes of push, at the moment
+      // I prevent it from handling any other sizes of push
+
+      const auto vm_reg_src = ReadValue<VmRegister>( &code );
       auto reg_src_disp = ReadValue<uintptr_t>( &code );
 
       if ( relocated_disp ) {
@@ -478,7 +474,7 @@ __declspec( dllexport ) int32_t
 
       // read the register value
       const auto reg_src_value =
-          *GetRegisterValuePointer( vm_context, reg_src_offset );
+          *GetPointerToRegister( vm_context, vm_reg_src.register_offset );
 
       // read the stack value at the register + disp offset
       const auto value_to_push =
