@@ -695,6 +695,13 @@ Shellcode CreateVirtualizedShellcode(
       break;
   }
 
+#ifndef _WIN64
+  // On x86, the interpreter does not properly handle reading sizes larger than 4 due to using uintptr_t when reading
+  for ( int i = 0; i < instruction.detail->x86.op_count; ++i ) {
+    assert( instruction.detail->x86.operands[ i ].size <= 4 );
+  }
+#endif
+
   return shellcode;
 }
 
