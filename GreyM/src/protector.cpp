@@ -9,6 +9,8 @@
 #include "rtti_obfuscator.h"
 #include "utils/random.h"
 #include "pe/peutils.h"
+#include "utils/console_log.h"
+#include "utils/file_log.h"
 
 #include "../../Interpreter/src/main.h"
 
@@ -759,8 +761,6 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
                    original_pe_nt_headers, header_data );
 #endif
 
-  std::string output_log = "";
-
   const auto original_text_section_header =
       *original_pe.GetSectionHeaders().FromName( ".text" );
 
@@ -947,6 +947,9 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
         }
 
         ++total_virtualized_instructions;
+
+        file_log::Info( "Virtualized 0x%08I64x, %s %s", instruction.address,
+                        instruction.mnemonic, instruction.op_str );
       }
     }
 

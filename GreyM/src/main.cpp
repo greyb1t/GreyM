@@ -4,11 +4,9 @@
 #include "utils/file_io.h"
 #include "protector.h"
 
-#pragma comment( lib, "capstone.lib" )
+#include "utils/console_log.h"
 
-void PrintError( const std::string& message ) {
-  printf( "[X] Error: %s LastError: %d", message.c_str(), GetLastError() );
-}
+#pragma comment( lib, "capstone.lib" )
 
 int main( int argc, char* argv[] ) {
   try {
@@ -26,7 +24,7 @@ int main( int argc, char* argv[] ) {
         parent_dir_wide + TEXT( "Test Executable.exe" ) );
 
     if ( target_file_data.empty() ) {
-      PrintError( "Unable to open the target file." );
+      console::Print( "Unable to open the target file." );
       std::cin.get();
       return -1;
     }
@@ -38,16 +36,16 @@ int main( int argc, char* argv[] ) {
       if ( !fileio::WriteFileData(
                parent_dir_wide + TEXT( "Test Executable Out.exe" ),
                new_protected_pe.GetPeData() ) ) {
-        PrintError( "Unable to write output file" );
+        console::Print( "Unable to write output file" );
       }
     } else {
-      PrintError( "The PE is not valid." );
+      console::Print( "The PE is not valid." );
       std::cin.get();
       return -1;
     }
 
   } catch ( std::exception ex ) {
-    PrintError( ex.what() );
+    console::Print( ex.what() );
   }
 
   std::cin.get();

@@ -29,6 +29,7 @@
     </ClCompile>
     <ClCompile Include="src\pe\peutils.cpp" />
     <ClCompile Include="src\pe\portable_executable.cpp" />
+    <ClCompile Include="src\utils\file_log.cpp" />
     <ClCompile Include="src\utils\safe_instruction.cpp" />
     <ClCompile Include="src\pe\section.cpp" />
     <ClCompile Include="src\pe\section_headers.cpp" />
@@ -47,7 +48,9 @@
     <ClInclude Include="src\pe\section_headers.h" />
     <ClInclude Include="src\protector.h" />
     <ClInclude Include="src\rtti_obfuscator.h" />
+    <ClInclude Include="src\utils\console_log.h" />
     <ClInclude Include="src\utils\file_io.h" />
+    <ClInclude Include="src\utils\file_log.h" />
     <ClInclude Include="src\utils\random.h" />
     <ClInclude Include="src\utils\safe_instruction.h" />
     <ClInclude Include="src\utils\shellcode.h" />
