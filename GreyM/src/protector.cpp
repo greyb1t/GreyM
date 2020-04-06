@@ -18,6 +18,29 @@
 
 namespace protector {
 
+enum class FixupOperation {
+  AddVmLoaderSectionVirtualAddress,
+  SubtractVmLoaderSectionVirtualAddress,
+  AddVirtualizedCodeSectionVirtualAddress,
+  AddTlsBabySectionVirtualAddress,
+};
+
+// If the offset is relative to the specified section
+// E.g. VmLoaderSection means that the offset is relative to the vm loader section
+enum class FixupOffsetType {
+  VmLoaderSection,
+  TlsBabySection,
+  TextSection,
+};
+
+struct Fixup {
+  uintptr_t offset;
+  FixupOffsetType offset_type;
+  // The size of the value to update, 4 or 8 bytes?
+  uint8_t size;
+  FixupOperation operation;
+};
+
 std::vector<uintptr_t> GetRelocationsWithinInstruction(
     const cs_insn& instruction,
     const std::vector<uintptr_t>& relocations_to_search ) {
@@ -121,13 +144,15 @@ uint32_t GetExportedFunctionOffsetRelativeToSection(
 
 void AddTlsCallbacks( const PortableExecutable& original_pe,
                       const PortableExecutable& interpreter_pe,
-                      const uint32_t vm_section_virtual_address,
-                      Section& vm_section,
-                      const IMAGE_NT_HEADERS& original_pe_nt_headers,
-                      std::vector<uint8_t>& header_data ) {
-  if ( original_pe.GetNtHeaders()
-           ->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ]
+                      Section* tls_baby_section,
+                      std::vector<Fixup>* fixups ) {
+  const auto original_pe_headers = original_pe.GetNtHeaders();
+
+  if ( original_pe_headers->OptionalHeader
+           .DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ]
            .Size != 0 ) {
+    // TODO: Copy the whole content of TLS to the vm section incase it already exists
+
     throw std::runtime_error(
         "The target executable already has a TLS directory, not supported at "
         "the moment." );
@@ -138,10 +163,9 @@ void AddTlsCallbacks( const PortableExecutable& original_pe,
                                                   "TlsCallback" );
 
   // Add the address of callbacks array
-  uintptr_t tls_callback_list[] = { DEFAULT_PE_BASE_ADDRESS +
-                                        vm_section_virtual_address +
-                                        interpreter_tls_callback_offset,
-                                    0, 0, 0 };
+  uintptr_t tls_callback_list[] = {
+    DEFAULT_PE_BASE_ADDRESS + interpreter_tls_callback_offset, 0, 0, 0
+  };
 
   uint8_t* tls_callback_list_ptr =
       reinterpret_cast<uint8_t*>( tls_callback_list );
@@ -152,28 +176,44 @@ void AddTlsCallbacks( const PortableExecutable& original_pe,
       &tls_callback_list_ptr[ sizeof( tls_callback_list ) ] );
 
   // Add the TLS callback addresses section
-  const auto callback_list_offset = vm_section.AppendCode(
+  const auto callback_list_offset = tls_baby_section->AppendCode(
       tls_callbacks_list_data,
-      original_pe_nt_headers.OptionalHeader.SectionAlignment,
-      original_pe_nt_headers.OptionalHeader.FileAlignment );
+      original_pe_headers->OptionalHeader.SectionAlignment,
+      original_pe_headers->OptionalHeader.FileAlignment );
+
+  const auto fixup0 =
+      callback_list_offset + 0 /* first offset in the tls callback list */;
+
+  Fixup callback_addr_fixup;
+  callback_addr_fixup.offset = fixup0;
+  callback_addr_fixup.offset_type = FixupOffsetType::TlsBabySection;
+  callback_addr_fixup.operation =
+      FixupOperation::AddVmLoaderSectionVirtualAddress;
+  callback_addr_fixup.size = sizeof( uintptr_t );
+  fixups->push_back( callback_addr_fixup );
 
   IMAGE_TLS_DIRECTORY tls_directory;
   // The loader will copy the data between StartAddressOfRawData and
   // EndAddressOfRawData, make them zero to not copy anything
+  // TODO: Consider using this to our advantage?
   tls_directory.StartAddressOfRawData = 0;
   tls_directory.EndAddressOfRawData = 0;
 
   // AddressOfIndex can simply just point to some data that is 0
   tls_directory.AddressOfIndex = DEFAULT_PE_BASE_ADDRESS +
-                                 vm_section_virtual_address +
-                                 callback_list_offset + 16;
+                                 //vm_section_virtual_address +
+                                 callback_list_offset + 8;
 
   tls_directory.AddressOfCallBacks = DEFAULT_PE_BASE_ADDRESS +
-                                     vm_section_virtual_address +
+                                     //vm_section_virtual_address +
                                      callback_list_offset;
 
   tls_directory.SizeOfZeroFill = 0;
+
+  // TODO: Which one is it? Probably the latter
   tls_directory.Characteristics = IMAGE_SCN_ALIGN_4BYTES;
+  //tls_directory.Characteristics = IMAGE_SCN_ALIGN_8BYTES;
+
   // https://docs.microsoft.com/en-us/windows/desktop/debug/pe-format#the-tls-section
   // WHAT, ADDRESS IS NOT RVA, BUT A ADDRESS WITH BASE RELOCATION??
   // MAYBE NOT NEEDED BECAUSE WE REMOVED DYNAMIC BASE ADDRESS
@@ -201,19 +241,38 @@ void AddTlsCallbacks( const PortableExecutable& original_pe,
 
   // Add the TLS data to last section before calculating the vm section
   // virtual address
-  const auto tls_directory_data_offset = vm_section.AppendCode(
-      tls_directory_data,
-      original_pe_nt_headers.OptionalHeader.SectionAlignment,
-      original_pe_nt_headers.OptionalHeader.FileAlignment );
+  const auto tls_directory_data_offset = tls_baby_section->AppendCode(
+      tls_directory_data, original_pe_headers->OptionalHeader.SectionAlignment,
+      original_pe_headers->OptionalHeader.FileAlignment );
 
-  // Modify the header to add the TLS directry location in the PE
-  auto header_data_nt_headers = peutils::GetNtHeaders( header_data.data() );
+  const auto addr_of_index_offset =
+      tls_directory_data_offset +
+      offsetof( IMAGE_TLS_DIRECTORY, AddressOfIndex );
 
-  auto& tls_data_directory = header_data_nt_headers->OptionalHeader
+  Fixup addr_of_index_fixup;
+  addr_of_index_fixup.offset = addr_of_index_offset;
+  addr_of_index_fixup.offset_type = FixupOffsetType::TlsBabySection;
+  addr_of_index_fixup.operation =
+      FixupOperation::AddTlsBabySectionVirtualAddress;
+  addr_of_index_fixup.size = sizeof( uintptr_t );
+  fixups->push_back( addr_of_index_fixup );
+
+  const auto addr_of_callbacks_offset =
+      tls_directory_data_offset +
+      offsetof( IMAGE_TLS_DIRECTORY, AddressOfCallBacks );
+
+  Fixup addr_of_callbacks_fixup;
+  addr_of_callbacks_fixup.offset = addr_of_callbacks_offset;
+  addr_of_callbacks_fixup.offset_type = FixupOffsetType::TlsBabySection;
+  addr_of_callbacks_fixup.operation =
+      FixupOperation::AddTlsBabySectionVirtualAddress;
+  addr_of_callbacks_fixup.size = sizeof( uintptr_t );
+  fixups->push_back( addr_of_callbacks_fixup );
+
+  auto& tls_data_directory = original_pe_headers->OptionalHeader
                                  .DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
   tls_data_directory.Size = sizeof( IMAGE_TLS_DIRECTORY );
-  tls_data_directory.VirtualAddress =
-      vm_section_virtual_address + tls_directory_data_offset;
+  tls_data_directory.VirtualAddress = tls_directory_data_offset;
 }
 
 void RelocateInterpreterPe( PortableExecutable* interpreter_pe,
@@ -295,10 +354,10 @@ uint32_t GetRelocationBlockCount( const PortableExecutable& pe ) {
 }
 
 uint32_t DetermineFirstRelocationBlockVirtualAddress(
-    const std::vector<uintptr_t>& vm_section_offsets_to_relocate,
+    const std::vector<uintptr_t>& vm_section_offsets_to_add_to_relocation_table,
     const int highest_reloc_offset ) {
-  assert( vm_section_offsets_to_relocate.size() > 0 );
-  return peutils::AlignDown( vm_section_offsets_to_relocate[ 0 ],
+  assert( vm_section_offsets_to_add_to_relocation_table.size() > 0 );
+  return peutils::AlignDown( vm_section_offsets_to_add_to_relocation_table[ 0 ],
                              highest_reloc_offset );
 }
 
@@ -343,9 +402,13 @@ void AppendRelocationBlock( const uintptr_t reloc_block_virtual_address,
 // Adds relocations upon the relocation table that relocates
 // the image base in the loader shellcode
 void AddVmSectionRelocations(
-    const std::vector<uintptr_t>& vm_section_offsets_to_relocate,
+    const std::vector<uintptr_t>& vm_section_offsets_to_add_to_relocation_table,
     IMAGE_NT_HEADERS* nt_headers,
     Section& reloc_section ) {
+  if ( vm_section_offsets_to_add_to_relocation_table.empty() ) {
+    return;
+  }
+
   // Required to be the .reloc section
   assert( reloc_section.GetName() == ".reloc" );
 
@@ -353,14 +416,15 @@ void AddVmSectionRelocations(
 
   auto reloc_block_virtual_address =
       DetermineFirstRelocationBlockVirtualAddress(
-          vm_section_offsets_to_relocate, kHighestNumberFrom12Bits );
+          vm_section_offsets_to_add_to_relocation_table,
+          kHighestNumberFrom12Bits );
 
   TrimRelocSectionPadding( nt_headers, reloc_section );
 
   std::vector<Relocation> new_relocations;
 
   for ( const auto vm_section_offset_to_relocate :
-        vm_section_offsets_to_relocate ) {
+        vm_section_offsets_to_add_to_relocation_table ) {
     const auto delta_offset_from_reloc_block_va =
         vm_section_offset_to_relocate - reloc_block_virtual_address;
 
@@ -511,25 +575,11 @@ std::vector<uintptr_t> GetRelocationRvas( const PortableExecutable& pe ) {
   return relocation_rvas;
 }
 
-struct FixupContext {
-  std::vector<uintptr_t> relocation_rvas_to_remove;
-  std::vector<uint32_t> offset_fixup_text_section_to_vm_section;
-  std::vector<uint32_t> offset_fixup_vm_section_to_virtualized_code_section;
-  std::vector<uint32_t> offset_fixup_vm_section_to_text_section;
-
-  // List that contains vm section offsets that should be
-  // relocated (modified) by adding the section RVA to them.
-  std::vector<uint32_t> vm_section_offsets_to_relocate;
-
-  // A list containing offset relative to vm section
-  // that will be added to the relocation table in the PE
-  std::vector<uintptr_t> vm_section_offsets_to_add_to_relocation_table;
-};
-
 void FixFinishedPe( PortableExecutable* pe,
-                    const FixupContext& fixup_context,
+                    const std::vector<uintptr_t>& relocation_rvas_to_remove,
                     const IMAGE_SECTION_HEADER& text_section,
-                    const uintptr_t previous_reloc_block_count ) {
+                    const uintptr_t previous_reloc_block_count,
+                    const std::vector<Fixup>& fixups ) {
   // After we have built the new pe, we now have virtual address of the vm
   // section, we use that to fix up the relocations to line up with that section
   FixupLoaderRelocationBlocks( previous_reloc_block_count, pe );
@@ -540,7 +590,7 @@ void FixFinishedPe( PortableExecutable* pe,
   // We handle the relocation ourselves, therefore we remove them to not fuck up the jmp to the virtualized code.
   // If we do this before fixing the relocation blocks, then we would find
   // double of some RVA's and removing wrong relocations
-  for ( const auto reloc_rva : fixup_context.relocation_rvas_to_remove ) {
+  for ( const auto reloc_rva : relocation_rvas_to_remove ) {
     pe->EachRelocation( [&]( IMAGE_BASE_RELOCATION* reloc_block,
                              const uintptr_t rva, Relocation* reloc ) {
       // NOTE: We cannot compare the offsets because, a relocation may have
@@ -564,79 +614,108 @@ void FixFinishedPe( PortableExecutable* pe,
   // have an entry in the relocation table
   // If we disable the dynamic base address, there is no need to relocate
   // anything in the PE :D
-  //new_pe.DisableASLR();
+  pe->DisableASLR();
 
-  auto new_pe_sections = pe->GetSectionHeaders();
+  auto new_pe_section_headers = pe->GetSectionHeaders();
 
-  const auto new_pe_vm_section =
-      new_pe_sections.FromName( VM_LOADER_SECTION_NAME );
+  const auto new_pe_vm_loader_section =
+      new_pe_section_headers.FromName( VM_LOADER_SECTION_NAME );
 
   const auto new_pe_virtualized_code_section =
-      new_pe_sections.FromName( VM_CODE_SECTION_NAME );
+      new_pe_section_headers.FromName( VM_CODE_SECTION_NAME );
 
-  for ( const uint32_t text_section_offset :
-        fixup_context.offset_fixup_text_section_to_vm_section ) {
-    const auto rva_rva =
-        section::SectionOffsetToRva( &text_section, text_section_offset );
-    const auto file_offset = new_pe_sections.RvaToFileOffset( rva_rva );
-    auto image_ptr = pe->GetPeImagePtr();
+  const auto tls_baby_section =
+      new_pe_section_headers.FromName( TLSBABY_SECTION_NAME );
 
-    uint32_t loader_shellcode_offset =
-        *reinterpret_cast<uint32_t*>( image_ptr + file_offset );
+  for ( const auto fixup : fixups ) {
+    IMAGE_SECTION_HEADER const* section_header = nullptr;
 
-    // Add the virtual address for that specific section to make it point to the
-    // correct location
-    *reinterpret_cast<uint32_t*>( image_ptr + file_offset ) =
-        loader_shellcode_offset + new_pe_vm_section->VirtualAddress;
-  }
+    switch ( fixup.offset_type ) {
+      case FixupOffsetType::VmLoaderSection:
+        section_header = new_pe_vm_loader_section;
+        break;
+      case FixupOffsetType::TextSection:
+        section_header = &text_section;
+        break;
+      case FixupOffsetType::TlsBabySection:
+        section_header = tls_baby_section;
+        break;
+      default:
+        assert( false && "bruh" );
+        break;
+    }
 
-  for ( const uint32_t vm_section_image_base_offset :
-        fixup_context.offset_fixup_vm_section_to_virtualized_code_section ) {
-    const auto rva_rva = section::SectionOffsetToRva(
-        new_pe_vm_section, vm_section_image_base_offset );
-    const auto file_offset = new_pe_sections.RvaToFileOffset( rva_rva );
-    auto image_ptr = pe->GetPeImagePtr();
+    const uintptr_t rva =
+        section::SectionOffsetToRva( section_header, fixup.offset );
 
-    uint32_t vm_code_offset =
-        *reinterpret_cast<uint32_t*>( image_ptr + file_offset );
+    const auto file_offset = new_pe_section_headers.RvaToFileOffset( rva );
+    const auto image_ptr_to_update = pe->GetPeImagePtr() + file_offset;
 
-    // Add the virtual address for that specific section to make it point to the
-    // correct location
-    *reinterpret_cast<uint32_t*>( image_ptr + file_offset ) =
-        vm_code_offset + new_pe_virtualized_code_section->VirtualAddress;
-  }
+    switch ( fixup.size ) {
+      case sizeof( uint32_t ): {
+        const auto value = *reinterpret_cast<uint32_t*>( image_ptr_to_update );
 
-  for ( const uint32_t text_section_offset :
-        fixup_context.offset_fixup_vm_section_to_text_section ) {
-    const auto rva_rva =
-        section::SectionOffsetToRva( new_pe_vm_section, text_section_offset );
-    const auto file_offset = new_pe_sections.RvaToFileOffset( rva_rva );
-    auto image_ptr = pe->GetPeImagePtr();
+        switch ( fixup.operation ) {
+          case FixupOperation::AddVmLoaderSectionVirtualAddress:
+            *reinterpret_cast<uint32_t*>( image_ptr_to_update ) =
+                value + new_pe_vm_loader_section->VirtualAddress;
+            break;
 
-    uint32_t loader_shellcode_offset =
-        *reinterpret_cast<uint32_t*>( image_ptr + file_offset );
+          case FixupOperation::AddVirtualizedCodeSectionVirtualAddress:
+            *reinterpret_cast<uint32_t*>( image_ptr_to_update ) =
+                value + new_pe_virtualized_code_section->VirtualAddress;
+            break;
 
-    // Add the virtual address for that specific section to make it point to the
-    // correct location
-    *reinterpret_cast<uint32_t*>( image_ptr + file_offset ) =
-        loader_shellcode_offset - new_pe_vm_section->VirtualAddress;
-  }
+          case FixupOperation::SubtractVmLoaderSectionVirtualAddress:
+            *reinterpret_cast<uint32_t*>( image_ptr_to_update ) =
+                value - new_pe_vm_loader_section->VirtualAddress;
+            break;
 
-  // Add the vm_section RVA to each of the values that should be relocated
-  for ( const uint32_t vm_section_interpreter_offset :
-        fixup_context.vm_section_offsets_to_relocate ) {
-    const auto rva_rva = section::SectionOffsetToRva(
-        new_pe_vm_section, vm_section_interpreter_offset );
-    const auto file_offset = new_pe_sections.RvaToFileOffset( rva_rva );
-    auto image_ptr = pe->GetPeImagePtr();
+          case FixupOperation::AddTlsBabySectionVirtualAddress:
+            *reinterpret_cast<uint32_t*>( image_ptr_to_update ) =
+                value + tls_baby_section->VirtualAddress;
+            break;
 
-    uint32_t loader_shellcode_offset =
-        *reinterpret_cast<uint32_t*>( image_ptr + file_offset );
+          default:
+            throw std::runtime_error( "unsupported fixup operation" );
+            break;
+        }
+      } break;
 
-    // Add the virtual address for that specific section to make it point to the
-    // correct location
-    *reinterpret_cast<uint32_t*>( image_ptr + file_offset ) =
-        loader_shellcode_offset + new_pe_vm_section->VirtualAddress;
+      case sizeof( uint64_t ): {
+        const auto value = *reinterpret_cast<uint64_t*>( image_ptr_to_update );
+
+        switch ( fixup.operation ) {
+          case FixupOperation::AddVmLoaderSectionVirtualAddress:
+            *reinterpret_cast<uint64_t*>( image_ptr_to_update ) =
+                value + new_pe_vm_loader_section->VirtualAddress;
+            break;
+
+          case FixupOperation::AddVirtualizedCodeSectionVirtualAddress:
+            *reinterpret_cast<uint64_t*>( image_ptr_to_update ) =
+                value + new_pe_virtualized_code_section->VirtualAddress;
+            break;
+
+          case FixupOperation::SubtractVmLoaderSectionVirtualAddress:
+            *reinterpret_cast<uint64_t*>( image_ptr_to_update ) =
+                value - new_pe_vm_loader_section->VirtualAddress;
+            break;
+
+          case FixupOperation::AddTlsBabySectionVirtualAddress:
+            *reinterpret_cast<uint64_t*>( image_ptr_to_update ) =
+                value + tls_baby_section->VirtualAddress;
+            break;
+
+          default:
+            throw std::runtime_error( "unsupported fixup operation" );
+            break;
+        }
+      } break;
+
+      default:
+        throw std::runtime_error( "unsupported fixup size" );
+        break;
+    }
   }
 
   // NOTE: This is not fully tested, may cause issues
@@ -644,13 +723,13 @@ void FixFinishedPe( PortableExecutable* pe,
 
   const auto nullify_pe_directory = []( PortableExecutable* pe,
                                         IMAGE_NT_HEADERS* nt_headers,
-                                        SectionHeaders& sections,
+                                        SectionHeaders& section_headers,
                                         const uint32_t directory_index ) {
     const auto rva = nt_headers->OptionalHeader.DataDirectory[ directory_index ]
                          .VirtualAddress;
     const auto size =
         nt_headers->OptionalHeader.DataDirectory[ directory_index ].Size;
-    const auto directory_offset = sections.RvaToFileOffset( rva );
+    const auto directory_offset = section_headers.RvaToFileOffset( rva );
 
     auto pe_data = pe->GetPeImagePtr();
 
@@ -663,15 +742,23 @@ void FixFinishedPe( PortableExecutable* pe,
 
   auto new_nt_headers = pe->GetNtHeaders();
 
-  nullify_pe_directory( pe, new_nt_headers, new_pe_sections,
+  nullify_pe_directory( pe, new_nt_headers, new_pe_section_headers,
                         IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG );
 
-  nullify_pe_directory( pe, new_nt_headers, new_pe_sections,
+  nullify_pe_directory( pe, new_nt_headers, new_pe_section_headers,
                         IMAGE_DIRECTORY_ENTRY_DEBUG );
+
+  // Temporary solution
+  auto& tls_data_directory =
+      new_nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
+  tls_data_directory.Size = sizeof( IMAGE_TLS_DIRECTORY );
+  tls_data_directory.VirtualAddress += tls_baby_section->VirtualAddress;
 }
 
-void AddInterpreterRelocationsToFixup( PortableExecutable& interpreter_pe,
-                                       FixupContext* fixup_context ) {
+void AddInterpreterRelocationsToFixup(
+    PortableExecutable& interpreter_pe,
+    std::vector<uintptr_t>* vm_section_offsets_to_add_to_relocation_table,
+    std::vector<Fixup>* fixups ) {
   const auto vm_fun_section_header =
       interpreter_pe.GetSectionHeaders().FromName( VM_FUNCTIONS_SECTION_NAME );
 
@@ -680,23 +767,31 @@ void AddInterpreterRelocationsToFixup( PortableExecutable& interpreter_pe,
       GetRelocationsWithinSectionAsSectionOffsets( interpreter_pe,
                                                    *vm_fun_section_header );
 
+  Fixup fixup;
+  fixup.offset_type = FixupOffsetType::VmLoaderSection;
+  fixup.operation = FixupOperation::AddVmLoaderSectionVirtualAddress;
+  fixup.size = sizeof( uint32_t );
+
   for ( const auto& relocation_section_offset :
         vm_fun_section_offsets_that_has_relocations ) {
     // Add the section offset to vector to later add to the new PE relocation table
-    fixup_context->vm_section_offsets_to_add_to_relocation_table.push_back(
+    vm_section_offsets_to_add_to_relocation_table->push_back(
         relocation_section_offset );
 
     // Add section offset to vector to later do a modification on the value in that offset
-    fixup_context->vm_section_offsets_to_relocate.push_back(
-        relocation_section_offset );
+    fixup.offset = relocation_section_offset;
+
+    fixups->push_back( fixup );
   }
 }
 
-PortableExecutable AssembleNewPe( const PortableExecutable& original_pe,
-                                  const FixupContext& fixup_context,
-                                  const Section& new_text_section,
-                                  const Section& vm_loader_section,
-                                  const Section& virtualized_code_section ) {
+PortableExecutable AssembleNewPe(
+    const PortableExecutable& original_pe,
+    const std::vector<uintptr_t>& vm_section_offsets_to_add_to_relocation_table,
+    const Section& new_text_section,
+    const Section& vm_loader_section,
+    const Section& virtualized_code_section,
+    const Section& tls_baby_section ) {
   auto new_sections = original_pe.CopySectionsDeep();
 
   // Replace the original text section with our modified one
@@ -722,13 +817,13 @@ PortableExecutable AssembleNewPe( const PortableExecutable& original_pe,
 
   // The relocation vector holds offsets relative to the section
   // below in the FixupLoaderRelocationBlocks() call, we later fix up those relocations
-  AddVmSectionRelocations(
-      fixup_context.vm_section_offsets_to_add_to_relocation_table,
-      new_header_nt_header, last_section );
+  AddVmSectionRelocations( vm_section_offsets_to_add_to_relocation_table,
+                           new_header_nt_header, last_section );
 
   // add the new sections to the new pe
   new_sections.push_back( vm_loader_section );
   new_sections.push_back( virtualized_code_section );
+  new_sections.push_back( tls_baby_section );
 
   return pe::Build( new_header_data, new_sections );
 }
@@ -754,11 +849,21 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
   auto vm_loader_section = CreateVmSection(
       &interpreter_pe, original_pe_nt_headers.OptionalHeader.ImageBase );
 
-#if 0
+  std::vector<uintptr_t> relocation_rvas_to_remove;
+
+  // A list containing offset relative to vm section
+  // that will be added to the relocation table in the PE
+  std::vector<uintptr_t> vm_section_offsets_to_add_to_relocation_table;
+
+  std::vector<Fixup> fixups;
+
+  auto tls_baby_section = section::CreateEmptySection(
+      TLSBABY_SECTION_NAME,
+      IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_DISCARDABLE );
+
+#if 1
   // TODO: Since we added support for dynamic base, we need to relocate it :O
-  AddTlsCallbacks( original_pe, interpreter_pe,
-                   vm_section_virtual_address, vm_section,
-                   original_pe_nt_headers, header_data );
+  AddTlsCallbacks( original_pe, interpreter_pe, &tls_baby_section, &fixups );
 #endif
 
   const auto original_text_section_header =
@@ -776,9 +881,8 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
   Stopwatch stopwatch;
   stopwatch.Start();
 
-  FixupContext fixup_context;
-
-  AddInterpreterRelocationsToFixup( interpreter_pe, &fixup_context );
+  AddInterpreterRelocationsToFixup(
+      interpreter_pe, &vm_section_offsets_to_add_to_relocation_table, &fixups );
 
   auto virtualized_code_section = section::CreateEmptySection(
       VM_CODE_SECTION_NAME, IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_DISCARDABLE );
@@ -877,24 +981,34 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
             original_pe_nt_headers.OptionalHeader.SectionAlignment,
             original_pe_nt_headers.OptionalHeader.FileAlignment );
 
-        // add to vector to modify the value later because the sections have no
-        // VirtualAddress yet
-        fixup_context.offset_fixup_vm_section_to_text_section.push_back(
-            loader_shellcode_offset + orig_addr_value_offset );
+        Fixup jmp_back_addr_fixup;
+        jmp_back_addr_fixup.offset =
+            loader_shellcode_offset + orig_addr_value_offset;
+        jmp_back_addr_fixup.offset_type = FixupOffsetType::VmLoaderSection;
+        jmp_back_addr_fixup.operation =
+            FixupOperation::SubtractVmLoaderSectionVirtualAddress;
+        jmp_back_addr_fixup.size = sizeof( uint32_t );
+        fixups.push_back( jmp_back_addr_fixup );
 
         const auto vm_code_addr_offset =
             loader_shellcode_offset +
             vm_code_loader_shellcode.GetNamedValueOffset( VmCodeAddrVariable );
 
-        fixup_context.offset_fixup_vm_section_to_virtualized_code_section
-            .push_back( vm_code_addr_offset );
+        Fixup virtualized_code_addr_fixup;
+        virtualized_code_addr_fixup.offset = vm_code_addr_offset;
+        virtualized_code_addr_fixup.offset_type =
+            FixupOffsetType::VmLoaderSection;
+        virtualized_code_addr_fixup.operation =
+            FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
+        virtualized_code_addr_fixup.size = sizeof( uint32_t );
+        fixups.push_back( virtualized_code_addr_fixup );
 
         const auto vm_var_section_shellcode_offset =
             vm_code_loader_shellcode.GetNamedValueOffset(
                 VmVarSectionVariable );
 
         // add fixup for the image base argument for interpreter call
-        fixup_context.vm_section_offsets_to_add_to_relocation_table.push_back(
+        vm_section_offsets_to_add_to_relocation_table.push_back(
             loader_shellcode_offset + vm_var_section_shellcode_offset );
 
         const auto instruction_text_section_offset =
@@ -935,15 +1049,18 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
                    jmp_destination_as_uint8_array + sizeof( jmp_destination ),
                    text_section_data + jmp_addr_offset );
 
-        // add to vector to modify the value later because the sections have no
-        // VirtualAddress yet
-        fixup_context.offset_fixup_text_section_to_vm_section.push_back(
-            jmp_addr_offset );
+        Fixup jmp_to_vm_loader_fixup;
+        jmp_to_vm_loader_fixup.offset = jmp_addr_offset;
+        jmp_to_vm_loader_fixup.offset_type = FixupOffsetType::TextSection;
+        jmp_to_vm_loader_fixup.operation =
+            FixupOperation::AddVmLoaderSectionVirtualAddress;
+        jmp_to_vm_loader_fixup.size = sizeof( uint32_t );
+        fixups.push_back( jmp_to_vm_loader_fixup );
 
         // if it was relocated, add it to a list to remove the relocation later
         // on from PE because when we virtualize an instruction, we handle the relocation ourselve
         for ( const auto reloc_rva : relocations_rva_within_instruction ) {
-          fixup_context.relocation_rvas_to_remove.push_back( reloc_rva );
+          relocation_rvas_to_remove.push_back( reloc_rva );
         }
 
         ++total_virtualized_instructions;
@@ -993,15 +1110,14 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
         // Remove the relocations from the remove-list
         // In other words, restore the relocations that were previously removed
         for ( const auto& reloc_rva : relocations_rva_within_instruction ) {
-          const auto it_result = std::find(
-              fixup_context.relocation_rvas_to_remove.cbegin(),
-              fixup_context.relocation_rvas_to_remove.cend(), reloc_rva );
+          const auto it_result =
+              std::find( relocation_rvas_to_remove.cbegin(),
+                         relocation_rvas_to_remove.cend(), reloc_rva );
 
-          const bool found =
-              it_result != fixup_context.relocation_rvas_to_remove.end();
+          const bool found = it_result != relocation_rvas_to_remove.end();
 
           if ( found ) {
-            fixup_context.relocation_rvas_to_remove.erase( it_result );
+            relocation_rvas_to_remove.erase( it_result );
           }
         }
 
@@ -1057,12 +1173,15 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
   assert( new_text_section.GetSectionHeader().SizeOfRawData ==
           original_text_section_header.SizeOfRawData );
 
-  auto new_pe = AssembleNewPe( original_pe, fixup_context, new_text_section,
-                               vm_loader_section, virtualized_code_section );
+  auto new_pe =
+      AssembleNewPe( original_pe, vm_section_offsets_to_add_to_relocation_table,
+                     new_text_section, vm_loader_section,
+                     virtualized_code_section, tls_baby_section );
 
   // Do the finishing touches
-  FixFinishedPe( &new_pe, fixup_context, original_text_section_header,
-                 previous_reloc_block_count );
+  FixFinishedPe( &new_pe, relocation_rvas_to_remove,
+                 original_text_section_header, previous_reloc_block_count,
+                 fixups );
 
   // printf( "%s", output_log.c_str() );
 

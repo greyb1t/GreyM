@@ -59,7 +59,7 @@ Section section::CreateEmptySection( const std::string& name,
   // IMAGE_SCN_CNT_CODE | IMAGE_SCN_CNT_INITIALIZED_DATA |
   // IMAGE_SCN_CNT_UNINITIALIZED_DATA;
 
-  assert( name.size() < 8 );
+  assert( name.size() <= 8 );
 
   memcpy( section.section_header_.Name, name.c_str(),
           sizeof( section.section_header_.Name ) );
