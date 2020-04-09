@@ -153,6 +153,7 @@ void AddTlsCallbacks( const PortableExecutable& original_pe,
            .DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ]
            .Size != 0 ) {
     // TODO: Copy the whole content of TLS to the vm section incase it already exists
+    // TODO: Move the remove the original relocations, add the new ones
 
     throw std::runtime_error(
         "The target executable already has a TLS directory, not supported at "
@@ -843,6 +844,11 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
   auto tls_baby_section = section::CreateEmptySection(
       TLSBABY_SECTION_NAME,
       IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_DISCARDABLE );
+
+  // Add some temporary data just to ensure that it has some data incase no TLS callbacks are written into the PE
+  tls_baby_section.AppendCode(
+      { 0x13, 0x37 }, original_pe_nt_headers.OptionalHeader.SectionAlignment,
+      original_pe_nt_headers.OptionalHeader.FileAlignment );
 
 #if 1
   // TODO: Since we added support for dynamic base, we need to relocate it :O
