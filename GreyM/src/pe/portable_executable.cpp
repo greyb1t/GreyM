@@ -53,9 +53,6 @@ PortableExecutable pe::Build( const std::vector<uint8_t>& header,
             previous_section.section_header_.VirtualAddress +
                 previous_section.section_header_.Misc.VirtualSize,
             nt_headers.OptionalHeader.SectionAlignment );
-      } else {
-        // If no section data added, do not insert any data into the pe_data
-        continue;
       }
     }
 
@@ -68,14 +65,20 @@ PortableExecutable pe::Build( const std::vector<uint8_t>& header,
     memcpy( current_section_header, &section.section_header_,
             sizeof( section.section_header_ ) );
 
-    assert( pe_data.size() == section.section_header_.PointerToRawData );
-    pe_data.insert( pe_data.end(), section.data_.begin(), section.data_.end() );
+    // If there is data in section, add it to the PE
+    if ( section.data_.size() > 0 ) {
+      // Ensure that the section data is aligned with the pointer to raw data in the section header
+      assert( pe_data.size() == section.section_header_.PointerToRawData );
 
-    // Insert padding data at the end to fill the entire section due to
-    // alignment
-    pe_data.insert(
-        pe_data.end(),
-        section.section_header_.SizeOfRawData - section.data_.size(), 0xCC );
+      pe_data.insert( pe_data.end(), section.data_.begin(),
+                      section.data_.end() );
+
+      // Insert padding data at the end to fill the entire section due to
+      // alignment
+      pe_data.insert(
+          pe_data.end(),
+          section.section_header_.SizeOfRawData - section.data_.size(), 0xCC );
+    }
   }
 
   const auto new_pe = PortableExecutable( pe_data );
