@@ -31,6 +31,7 @@ enum class FixupOffsetType {
   VmLoaderSection,
   TlsBabySection,
   TextSection,
+  RelocSection,
 };
 
 struct Fixup {
@@ -376,10 +377,10 @@ void TrimRelocSectionPadding( const IMAGE_NT_HEADERS* nt_headers,
                              reloc_section_data->end() );
 }
 
-void AppendRelocationBlock( const uintptr_t reloc_block_virtual_address,
-                            std::vector<Relocation>& relocations,
-                            IMAGE_NT_HEADERS* nt_headers,
-                            Section& reloc_section ) {
+uintptr_t AppendRelocationBlock( const uintptr_t reloc_block_virtual_address,
+                                 std::vector<Relocation>& relocations,
+                                 IMAGE_NT_HEADERS* nt_headers,
+                                 Section& reloc_section ) {
   // if the count of relocations are odd, we need to add one no-op with type
   // and type 0, offset 0 to align to 32 bit boundary
   if ( relocations.size() % 2 != 0 ) {
@@ -389,14 +390,16 @@ void AppendRelocationBlock( const uintptr_t reloc_block_virtual_address,
   std::vector<uint8_t> reloc_block_bytes =
       CreateRelocationBlockBuffer( reloc_block_virtual_address, relocations );
 
-  reloc_section.AppendCode( reloc_block_bytes,
-                            nt_headers->OptionalHeader.SectionAlignment,
-                            nt_headers->OptionalHeader.FileAlignment );
+  const auto dest_offset = reloc_section.AppendCode(
+      reloc_block_bytes, nt_headers->OptionalHeader.SectionAlignment,
+      nt_headers->OptionalHeader.FileAlignment );
 
   auto reloc_directory = &nt_headers->OptionalHeader
                               .DataDirectory[ IMAGE_DIRECTORY_ENTRY_BASERELOC ];
 
   reloc_directory->Size += reloc_block_bytes.size();
+
+  return dest_offset;
 }
 
 // Adds relocations upon the relocation table that relocates
@@ -404,7 +407,8 @@ void AppendRelocationBlock( const uintptr_t reloc_block_virtual_address,
 void AddVmSectionRelocations(
     const std::vector<uintptr_t>& vm_section_offsets_to_add_to_relocation_table,
     IMAGE_NT_HEADERS* nt_headers,
-    Section& reloc_section ) {
+    Section& reloc_section,
+    std::vector<Fixup>* fixups ) {
   if ( vm_section_offsets_to_add_to_relocation_table.empty() ) {
     return;
   }
@@ -412,14 +416,19 @@ void AddVmSectionRelocations(
   // Required to be the .reloc section
   assert( reloc_section.GetName() == ".reloc" );
 
-  constexpr auto kHighestNumberFrom12Bits = 1 << 12;
+  // 0x1000 or 4096
+  constexpr auto k4kPage = 1 << 12;
 
   auto reloc_block_virtual_address =
       DetermineFirstRelocationBlockVirtualAddress(
-          vm_section_offsets_to_add_to_relocation_table,
-          kHighestNumberFrom12Bits );
+          vm_section_offsets_to_add_to_relocation_table, k4kPage );
 
   TrimRelocSectionPadding( nt_headers, reloc_section );
+
+  Fixup fixup;
+  fixup.offset_type = FixupOffsetType::RelocSection;
+  fixup.operation = FixupOperation::AddVmLoaderSectionVirtualAddress;
+  fixup.size = sizeof( uint32_t );
 
   std::vector<Relocation> new_relocations;
 
@@ -443,18 +452,21 @@ void AddVmSectionRelocations(
     relocation.offset = delta_offset_from_reloc_block_va;
 
     // has the delta exceeded the highest number for a reloc offset?
-    if ( delta_offset_from_reloc_block_va >= kHighestNumberFrom12Bits ) {
-      AppendRelocationBlock( reloc_block_virtual_address, new_relocations,
-                             nt_headers, reloc_section );
+    if ( delta_offset_from_reloc_block_va >= k4kPage ) {
+      fixup.offset =
+          AppendRelocationBlock( reloc_block_virtual_address, new_relocations,
+                                 nt_headers, reloc_section );
+      fixups->push_back( fixup );
 
       new_relocations.clear();
 
       // If the next relocation offset is bigger than the allowed value, then we need to
       // adjust the reloc block virtual address until the relocation fits the relocation block
       while ( ( vm_section_offset_to_relocate - reloc_block_virtual_address ) >=
-              kHighestNumberFrom12Bits ) {
+              k4kPage ) {
         // aligned to 4k page (4096)
-        reloc_block_virtual_address += 0x1000;
+        // TODO: Replace magic value with the variable 12 bits above
+        reloc_block_virtual_address += k4kPage;
       }
 
       // refresh the offset for the new block
@@ -467,44 +479,11 @@ void AddVmSectionRelocations(
 
   // If there are still relocations left to add
   if ( new_relocations.size() > 0 ) {
-    AppendRelocationBlock( reloc_block_virtual_address, new_relocations,
-                           nt_headers, reloc_section );
+    fixup.offset =
+        AppendRelocationBlock( reloc_block_virtual_address, new_relocations,
+                               nt_headers, reloc_section );
+    fixups->push_back( fixup );
   }
-}
-
-void FixupLoaderRelocationBlocks( const uint32_t previous_reloc_block_count,
-                                  PortableExecutable* new_pe ) {
-  const auto new_pe_vm_section_rva = new_pe->GetSectionHeaders()
-                                         .FromName( VM_LOADER_SECTION_NAME )
-                                         ->VirtualAddress;
-
-  uint32_t reloc_block_counter = 0;
-
-  IMAGE_BASE_RELOCATION* prev_reloc_block = nullptr;
-
-  new_pe->EachRelocation( [&]( IMAGE_BASE_RELOCATION* reloc_block,
-                               const uintptr_t rva, Relocation* reloc ) {
-    // For each relocation block, fixup the virtual address with the vm section rva
-    if ( prev_reloc_block != nullptr ) {
-      if ( reloc_block->VirtualAddress != prev_reloc_block->VirtualAddress ) {
-        ++reloc_block_counter;
-        prev_reloc_block = reloc_block;
-
-        // If the reloc block is created by us, then, fix it up
-        if ( reloc_block_counter > previous_reloc_block_count ) {
-          reloc_block->VirtualAddress += new_pe_vm_section_rva;
-        }
-      }
-    } else {
-      prev_reloc_block = reloc_block;
-      ++reloc_block_counter;
-
-      // If the reloc block is created by us, then, fix it up
-      if ( reloc_block_counter > previous_reloc_block_count ) {
-        reloc_block->VirtualAddress += new_pe_vm_section_rva;
-      }
-    }
-  } );
 }
 
 Section CreateVmSection( PortableExecutable* interpreter_pe,
@@ -580,10 +559,6 @@ void FixFinishedPe( PortableExecutable* pe,
                     const IMAGE_SECTION_HEADER& text_section,
                     const uintptr_t previous_reloc_block_count,
                     const std::vector<Fixup>& fixups ) {
-  // After we have built the new pe, we now have virtual address of the vm
-  // section, we use that to fix up the relocations to line up with that section
-  FixupLoaderRelocationBlocks( previous_reloc_block_count, pe );
-
   // AFTER we have fixed up the relocation blocks, THEN we remove the
   // relocations that have to be removed
   // The relocations to be removed are old relocations of the instruction that we have virtualized.
@@ -627,6 +602,8 @@ void FixFinishedPe( PortableExecutable* pe,
   const auto tls_baby_section =
       new_pe_section_headers.FromName( TLSBABY_SECTION_NAME );
 
+  const auto reloc_section = new_pe_section_headers.FromName( ".reloc" );
+
   for ( const auto fixup : fixups ) {
     IMAGE_SECTION_HEADER const* section_header = nullptr;
 
@@ -639,6 +616,9 @@ void FixFinishedPe( PortableExecutable* pe,
         break;
       case FixupOffsetType::TlsBabySection:
         section_header = tls_baby_section;
+        break;
+      case FixupOffsetType::RelocSection:
+        section_header = reloc_section;
         break;
       default:
         assert( false && "bruh" );
@@ -748,11 +728,13 @@ void FixFinishedPe( PortableExecutable* pe,
   nullify_pe_directory( pe, new_nt_headers, new_pe_section_headers,
                         IMAGE_DIRECTORY_ENTRY_DEBUG );
 
+#if 1
   // Temporary solution
   auto& tls_data_directory =
       new_nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
   tls_data_directory.Size = sizeof( IMAGE_TLS_DIRECTORY );
   tls_data_directory.VirtualAddress += tls_baby_section->VirtualAddress;
+#endif
 }
 
 void AddInterpreterRelocationsToFixup(
@@ -778,7 +760,7 @@ void AddInterpreterRelocationsToFixup(
     vm_section_offsets_to_add_to_relocation_table->push_back(
         relocation_section_offset );
 
-    // Add section offset to vector to later do a modification on the value in that offset
+    // Add the offset to the fixups as well to ensure that we add the vm loader virtual address
     fixup.offset = relocation_section_offset;
 
     fixups->push_back( fixup );
@@ -791,7 +773,8 @@ PortableExecutable AssembleNewPe(
     const Section& new_text_section,
     const Section& vm_loader_section,
     const Section& virtualized_code_section,
-    const Section& tls_baby_section ) {
+    const Section& tls_baby_section,
+    std::vector<Fixup>* fixups ) {
   auto new_sections = original_pe.CopySectionsDeep();
 
   // Replace the original text section with our modified one
@@ -818,7 +801,7 @@ PortableExecutable AssembleNewPe(
   // The relocation vector holds offsets relative to the section
   // below in the FixupLoaderRelocationBlocks() call, we later fix up those relocations
   AddVmSectionRelocations( vm_section_offsets_to_add_to_relocation_table,
-                           new_header_nt_header, last_section );
+                           new_header_nt_header, last_section, fixups );
 
   // add the new sections to the new pe
   new_sections.push_back( vm_loader_section );
@@ -1176,7 +1159,7 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
   auto new_pe =
       AssembleNewPe( original_pe, vm_section_offsets_to_add_to_relocation_table,
                      new_text_section, vm_loader_section,
-                     virtualized_code_section, tls_baby_section );
+                     virtualized_code_section, tls_baby_section, &fixups );
 
   // Do the finishing touches
   FixFinishedPe( &new_pe, relocation_rvas_to_remove,
