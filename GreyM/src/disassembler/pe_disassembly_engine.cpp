@@ -71,14 +71,12 @@ uintptr_t GetOperandRva( const cs_x86_op& operand,
 #endif
       break;
     default:
-      assert( false && "unhandled case" );
       break;
   }
 
-  return 0;
+  throw std::runtime_error( "should never occur" );
 }
 
-// TODO: consider changing this name, not revelevant?
 bool PeDisassemblyEngine::IsVTableOrFunction( const cs_x86_op& operand1,
                                               const cs_x86_op& operand2 ) {
   if ( operand1.type == x86_op_type::X86_OP_MEM &&
@@ -122,7 +120,7 @@ bool PeDisassemblyEngine::IsJumpTableX86( const cs_insn& instruction,
 
       // is the jump table within the text section?
       if ( section::IsRvaWithinSection(
-               pe_text_section_header_,
+               *pe_text_section_header_,
                static_cast<uintptr_t>( jump_table_rva ) ) ) {
         return true;
       }
@@ -295,7 +293,7 @@ void PeDisassemblyEngine::ParseJumpTable( const cs_insn& instruction,
 #endif
 
     // is the target function/address within the text section?
-    if ( !section::IsRvaWithinSection( pe_text_section_header_,
+    if ( !section::IsRvaWithinSection( *pe_text_section_header_,
                                        item_dest_rva ) )
       break;
 
@@ -371,7 +369,7 @@ bool PeDisassemblyEngine::IsFunctionX86( const uint8_t* code,
     const auto jump_dest_disasm_point =
         GetOperandDestinationValueDisassasemblyPoint(
             *instruction1, code, static_cast<uintptr_t>( jump_target_rva ) );
-    if ( !section::IsRvaWithinSection( pe_text_section_header_,
+    if ( !section::IsRvaWithinSection( *pe_text_section_header_,
                                        jump_dest_disasm_point.rva ) )
       return false;
 
@@ -467,7 +465,7 @@ bool PeDisassemblyEngine::IsFunctionX64( const uint8_t* code,
         GetOperandDestinationValueDisassasemblyPoint(
             *instruction, code, static_cast<uintptr_t>( jump_target_rva ) );
 
-    if ( !section::IsRvaWithinSection( pe_text_section_header_,
+    if ( !section::IsRvaWithinSection( *pe_text_section_header_,
                                        jump_dest_disasm_point.rva ) )
       return false;
 
@@ -654,7 +652,7 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
               // if we are not in the text section, then don't even bother
               // checking if it is a function it is most likely a pointer to the
               // .rdata section or something
-              if ( section::IsRvaWithinSection( pe_text_section_header_,
+              if ( section::IsRvaWithinSection( *pe_text_section_header_,
                                                 dest_disasm_point.rva ) &&
                    IsFunction( dest_disasm_point.code,
                                dest_disasm_point.rva ) ) {
@@ -737,7 +735,7 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
         if ( operand.type == x86_op_type::X86_OP_IMM ) {
           const auto operand_rva = GetOperandRva( operand, pe_image_base_ );
 
-          if ( section::IsRvaWithinSection( pe_text_section_header_,
+          if ( section::IsRvaWithinSection( *pe_text_section_header_,
                                             operand_rva ) ) {
             const auto dest_disasm =
                 GetOperandDestinationValueDisassasemblyPoint(
@@ -798,7 +796,7 @@ void PeDisassemblyEngine::ParseRDataSection() {
     const auto possible_function_pointer_rva =
         raw_file_data_value - pe_image_base_;
 
-    if ( section::IsRvaWithinSection( pe_text_section_header_,
+    if ( section::IsRvaWithinSection( *pe_text_section_header_,
                                       possible_function_pointer_rva ) ) {
       const auto possible_function_pointer_offset =
           pe_section_headers_.RvaToFileOffset( possible_function_pointer_rva );

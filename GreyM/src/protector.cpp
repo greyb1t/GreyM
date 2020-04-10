@@ -161,7 +161,7 @@ uint32_t GetExportedFunctionOffsetRelativeToSection(
       section_headers.FromRva( export_found->function_addr_rva );
 
   const auto interpreter_offset_relative_to_section =
-      section::RvaToSectionOffset( section_containing_interpreter,
+      section::RvaToSectionOffset( *section_containing_interpreter,
                                    export_found->function_addr_rva );
 
   return interpreter_offset_relative_to_section;
@@ -574,9 +574,9 @@ std::vector<uint32_t> GetRelocationsWithinSectionAsSectionOffsets(
       return;
     }
 
-    if ( section::IsRvaWithinSection( &section, rva ) ) {
+    if ( section::IsRvaWithinSection( section, rva ) ) {
       const auto relocation_section_offset =
-          section::RvaToSectionOffset( &section, rva );
+          section::RvaToSectionOffset( section, rva );
 
       offsets_result.push_back( relocation_section_offset );
     }
@@ -649,7 +649,7 @@ void FixFinishedPe( PortableExecutable* pe,
     }
 
     const uintptr_t rva =
-        section::SectionOffsetToRva( section_header, fixup.offset );
+        section::SectionOffsetToRva( *section_header, fixup.offset );
 
     const auto file_offset = new_pe_section_headers.RvaToFileOffset( rva );
     const auto image_ptr_to_update = pe->GetPeImagePtr() + file_offset;
@@ -1011,7 +1011,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
         const auto vm_var_section_shellcode_offset =
             vm_code_loader_shellcode.GetNamedValueOffset(
-                VmVarSectionVariable );
+                ImageBaseVariable );
 
         // add fixup for the image base argument for interpreter call
         context.fixup_context.vm_section_offsets_to_add_to_relocation_table
@@ -1020,7 +1020,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
         const auto instruction_text_section_offset =
             section::RvaToSectionOffset(
-                &original_text_section_header,
+                original_text_section_header,
                 static_cast<uint32_t>( instruction.address ) );
 
         const auto text_section_data =
@@ -1087,7 +1087,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   const auto InvalidInstructionCallback =
       [&]( const uint64_t address, const SmallInstructionData ins_data ) {
         const auto text_section_offset = section::RvaToSectionOffset(
-            &original_text_section_header, address );
+            original_text_section_header, address );
 
         // NOTE: THERE IS MORE WE NEED TO DO HERE I THINK
         assert( false && "verify if the changes made here are correct" );

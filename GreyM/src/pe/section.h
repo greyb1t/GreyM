@@ -8,14 +8,14 @@ namespace section {
 Section CreateEmptySection( const std::string& name,
                             const DWORD characteristics );
 
-const bool IsRvaWithinSection( const IMAGE_SECTION_HEADER* section_header,
+const bool IsRvaWithinSection( const IMAGE_SECTION_HEADER& section_header,
                                const uintptr_t rva );
 
-uint32_t RvaToSectionOffset( const IMAGE_SECTION_HEADER* section_header,
-                             const uint64_t rva );
+uintptr_t RvaToSectionOffset( const IMAGE_SECTION_HEADER& section_header,
+                              const uint64_t rva );
 
-uint32_t SectionOffsetToRva( const IMAGE_SECTION_HEADER* section_header,
-                             const uint32_t offset );
+uintptr_t SectionOffsetToRva( const IMAGE_SECTION_HEADER& section_header,
+                              const uint32_t offset );
 
 }  // namespace section
 

@@ -737,7 +737,7 @@ Shellcode GetX86LoaderShellcodeForVirtualizedCode(
 
   // push the address to .vmvar section
   shellcode.AddByte( 0x68 );  // push
-  shellcode.AddVariable<uint32_t>( image_base, VmVarSectionVariable );
+  shellcode.AddVariable<uint32_t>( image_base, ImageBaseVariable );
 
   // push current eip
   shellcode.AddByte( 0x68 );  // push
@@ -870,7 +870,7 @@ Shellcode GetX64LoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
 
   // mov r9, 0 (4th argument)
   shellcode.AddBytes( { 0x49, 0xB9 } );
-  shellcode.AddVariable<uint64_t>( image_base, VmVarSectionVariable );
+  shellcode.AddVariable<uint64_t>( image_base, ImageBaseVariable );
 
   // push eip (x64 way)
   // mov r8, 4 byte variabe (3rd argument)

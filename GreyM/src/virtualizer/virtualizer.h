@@ -5,12 +5,11 @@
 class Shellcode;
 
 const std::wstring VmOpcodeEncryptionKeyVariable =
-    TEXT( "vm_opcode_encyption_key" );
+    TEXT( "VmOpcodeEncryptionKey" );
 
-const std::wstring VmCodeAddrVariable =
-    TEXT( "VmCodeAddr" );
+const std::wstring VmCodeAddrVariable = TEXT( "VmCodeAddr" );
 
-const std::wstring VmVarSectionVariable = TEXT( "VmVarSection" );
+const std::wstring ImageBaseVariable = TEXT( "ImageBase" );
 
 const std::wstring OrigAddrVariable = TEXT( "OrigAddr" );
 

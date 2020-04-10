@@ -28,10 +28,9 @@ uintptr_t SectionHeaders::RvaToFileOffset( const uintptr_t rva ) const {
          ( rva - section_header->VirtualAddress );
 }
 
-IMAGE_SECTION_HEADER* SectionHeaders::FromRva(
-    const uintptr_t rva ) const {
+IMAGE_SECTION_HEADER* SectionHeaders::FromRva( const uintptr_t rva ) const {
   for ( auto& section_header : headers_ ) {
-    if ( section::IsRvaWithinSection( section_header, rva ) ) {
+    if ( section::IsRvaWithinSection( *section_header, rva ) ) {
       return section_header;
     }
   }

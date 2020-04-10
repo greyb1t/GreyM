@@ -68,25 +68,25 @@ Section section::CreateEmptySection( const std::string& name,
 }
 
 const bool section::IsRvaWithinSection(
-    const IMAGE_SECTION_HEADER* section_header,
+    const IMAGE_SECTION_HEADER& section_header,
     const uintptr_t rva ) {
-  if ( rva >= section_header->VirtualAddress &&
+  if ( rva >= section_header.VirtualAddress &&
        rva <
-           section_header->VirtualAddress + section_header->Misc.VirtualSize ) {
+           section_header.VirtualAddress + section_header.Misc.VirtualSize ) {
     return true;
   }
 
   return false;
 }
 
-uint32_t section::RvaToSectionOffset(
-    const IMAGE_SECTION_HEADER* section_header,
+uintptr_t section::RvaToSectionOffset(
+    const IMAGE_SECTION_HEADER& section_header,
     const uint64_t rva ) {
-  return static_cast<uint32_t>( rva - section_header->VirtualAddress );
+  return static_cast<uint32_t>( rva - section_header.VirtualAddress );
 }
 
-uint32_t section::SectionOffsetToRva(
-    const IMAGE_SECTION_HEADER* section_header,
+uintptr_t section::SectionOffsetToRva(
+    const IMAGE_SECTION_HEADER& section_header,
     const uint32_t offset ) {
-  return section_header->VirtualAddress + offset;
+  return section_header.VirtualAddress + offset;
 }
