@@ -490,6 +490,31 @@ void AddVmSectionRelocations(
   }
 }
 
+void RemoveRelocations( const std::vector<uintptr_t>& relocation_rvas_to_remove,
+                        PortableExecutable* pe ) {
+  // The relocations to be removed are old relocations of the instruction that we have virtualized.
+  // We handle the relocation ourselves, therefore we remove them to not fuck up the jmp to the virtualized code.
+  for ( const auto reloc_rva : relocation_rvas_to_remove ) {
+    pe->EachRelocation( [&]( IMAGE_BASE_RELOCATION* reloc_block,
+                             const uintptr_t rva, Relocation* reloc ) {
+      // NOTE: We cannot compare the offsets because, a relocation may have
+      // same offsets but different rva's due to adding the reloc block
+      // virtual address. Therefore we compare with the RVA's.
+      if ( reloc_rva == rva ) {
+        // Turn it into padding
+        reloc->type = IMAGE_REL_BASED_ABSOLUTE;
+
+        // Reset the offset as well to prevent this from being
+        // used to determine some stuff for the badboy
+        reloc->offset = 0;
+
+        // std::cout << "Remove relocation for offset: " << std::hex
+        //           << reloc->offset << " rva: " << rva << std::endl;
+      }
+    } );
+  }
+}
+
 Section CreateVmSection( PortableExecutable* interpreter_pe,
                          const uintptr_t new_image_base ) {
   // TODO: Remove IMAGE_SCN_MEM_EXECUTE to prevent IDA from seeing the section,
@@ -557,36 +582,9 @@ std::vector<uintptr_t> GetRelocationRvas( const PortableExecutable& pe ) {
 }
 
 void FixFinishedPe( PortableExecutable* pe,
-                    const std::vector<uintptr_t>& relocation_rvas_to_remove,
                     const IMAGE_SECTION_HEADER& text_section,
                     const uintptr_t previous_reloc_block_count,
                     const std::vector<Fixup>& fixups ) {
-  // AFTER we have fixed up the relocation blocks, THEN we remove the
-  // relocations that have to be removed
-  // The relocations to be removed are old relocations of the instruction that we have virtualized.
-  // We handle the relocation ourselves, therefore we remove them to not fuck up the jmp to the virtualized code.
-  // If we do this before fixing the relocation blocks, then we would find
-  // double of some RVA's and removing wrong relocations
-  for ( const auto reloc_rva : relocation_rvas_to_remove ) {
-    pe->EachRelocation( [&]( IMAGE_BASE_RELOCATION* reloc_block,
-                             const uintptr_t rva, Relocation* reloc ) {
-      // NOTE: We cannot compare the offsets because, a relocation may have
-      // same offsets but different rva's due to adding the reloc block
-      // virtual address. Therefore we compare with the RVA's.
-      if ( reloc_rva == rva ) {
-        // Turn it into padding
-        reloc->type = IMAGE_REL_BASED_ABSOLUTE;
-
-        // Reset the offset as well to prevent this from being
-        // used to determine some stuff for the badboy
-        reloc->offset = 0;
-
-        // std::cout << "Remove relocation for offset: " << std::hex
-        //           << reloc->offset << " rva: " << rva << std::endl;
-      }
-    } );
-  }
-
   // A lazy fix to avoid the fact that some instructions that we virtualize
   // have an entry in the relocation table
   // If we disable the dynamic base address, there is no need to relocate
@@ -813,7 +811,7 @@ PortableExecutable AssembleNewPe(
   return pe::Build( new_header_data, new_sections );
 }
 
-PortableExecutable Protect( const PortableExecutable original_pe ) {
+PortableExecutable Protect( PortableExecutable original_pe ) {
   PeDisassemblyEngine pe_disassembler( original_pe );
 
   // todo make the section sizes aligned with the remap
@@ -1167,15 +1165,16 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
   assert( new_text_section.GetSectionHeader().SizeOfRawData ==
           original_text_section_header.SizeOfRawData );
 
-  auto new_pe =
-      AssembleNewPe( original_pe, vm_section_offsets_to_add_to_relocation_table,
-                     new_text_section, vm_loader_section,
-                     virtualized_code_section, tls_baby_section, &fixups );
+  RemoveRelocations( relocation_rvas_to_remove, &original_pe );
+
+  auto new_pe = AssembleNewPe(
+      original_pe, vm_section_offsets_to_add_to_relocation_table,
+      tls_baby_section_offsets_to_add_to_relocation_table, new_text_section,
+      vm_loader_section, virtualized_code_section, tls_baby_section, &fixups );
 
   // Do the finishing touches
-  FixFinishedPe( &new_pe, relocation_rvas_to_remove,
-                 original_text_section_header, previous_reloc_block_count,
-                 fixups );
+  FixFinishedPe( &new_pe, original_text_section_header,
+                 previous_reloc_block_count, fixups );
 
   // printf( "%s", output_log.c_str() );
 
