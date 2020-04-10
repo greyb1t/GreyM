@@ -462,13 +462,16 @@ void AddVmSectionRelocations(
       new_relocations.clear();
 
       // If the next relocation offset is bigger than the allowed value, then we need to
-      // adjust the reloc block virtual address until the relocation fits the relocation block
-      while ( ( vm_section_offset_to_relocate - reloc_block_virtual_address ) >=
-              k4kPage ) {
+      // adjust the reloc block virtual address so the relocation fits the relocation block
+      if ( ( vm_section_offset_to_relocate - reloc_block_virtual_address ) >=
+           k4kPage ) {
         // aligned to 4k page (4096)
-        // TODO: Replace magic value with the variable 12 bits above
-        reloc_block_virtual_address += k4kPage;
+        reloc_block_virtual_address =
+            peutils::AlignDown( vm_section_offset_to_relocate, k4kPage );
       }
+
+      assert( ( vm_section_offset_to_relocate - reloc_block_virtual_address ) <
+              k4kPage );
 
       // refresh the offset for the new block
       relocation.offset =
@@ -549,8 +552,6 @@ std::vector<uintptr_t> GetRelocationRvas( const PortableExecutable& pe ) {
       relocation_rvas.push_back( rva );
     }
   } );
-
-  std::sort( relocation_rvas.begin(), relocation_rvas.end() );
 
   return relocation_rvas;
 }
@@ -881,6 +882,10 @@ PortableExecutable Protect( const PortableExecutable original_pe ) {
 
   std::vector<uintptr_t> original_pe_relocation_rvas =
       GetRelocationRvas( original_pe );
+
+  // Sort for quick binary search
+  std::sort( original_pe_relocation_rvas.begin(),
+             original_pe_relocation_rvas.end() );
 
   const auto EachInstructionCallback = [&]( const cs_insn& instruction,
                                             const uint8_t* ) {
