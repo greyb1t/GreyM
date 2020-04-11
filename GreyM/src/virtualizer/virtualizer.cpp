@@ -151,6 +151,8 @@ VmRegister GetVmRegisterOffsetFromX86MemoryReg( const cs_x86_op& operand ) {
 VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
   const auto& operands = instruction.detail->x86.operands;
 
+  VmOpcodes vm_opcode = VmOpcodes::NO_OPCODE;
+
   switch ( instruction.id ) {
     case x86_insn::X86_INS_MOV: {
       const auto& operand1 = operands[ 0 ];
@@ -160,33 +162,33 @@ VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
       if ( operand1.type == x86_op_type::X86_OP_REG ) {
         // If mov reg, imm
         if ( operand2.type == x86_op_type::X86_OP_IMM ) {
-          return VmOpcodes::MOV_REGISTER_IMMEDIATE;
+          vm_opcode = VmOpcodes::MOV_REGISTER_IMMEDIATE;
         }
         // If mov reg, reg
         else if ( operand2.type == x86_op_type::X86_OP_REG ) {
-          return VmOpcodes::MOV_REGISTER_REGISTER;
+          vm_opcode = VmOpcodes::MOV_REGISTER_REGISTER;
         }
         // If mov reg, [imm]
         else if ( IsOperandMemoryImmediate( operand2 ) ) {
-          return VmOpcodes::MOV_REGISTER_MEMORY_IMMEDIATE;
+          vm_opcode = VmOpcodes::MOV_REGISTER_MEMORY_IMMEDIATE;
         }
         // mov reg, [reg +- offset]
         else if ( IsOperandMemoryRegOffset( operand2 ) ) {
-          return VmOpcodes::MOV_REGISTER_MEMORY_REG_OFFSET;
+          vm_opcode = VmOpcodes::MOV_REGISTER_MEMORY_REG_OFFSET;
         }
       }
       // If mov x, reg
       else if ( operand2.type == x86_op_type::X86_OP_REG ) {
         // mov [reg +- offset], reg
         if ( IsOperandMemoryRegOffset( operand1 ) ) {
-          return VmOpcodes::MOV_MEMORY_REG_OFFSET_REG;
+          vm_opcode = VmOpcodes::MOV_MEMORY_REG_OFFSET_REG;
         }
       }
       // mov x, imm
       else if ( operand2.type == x86_op_type::X86_OP_IMM ) {
         // mov [reg +- offset], imm
         if ( IsOperandMemoryRegOffset( operand1 ) ) {
-          return VmOpcodes::MOV_MEMORY_REG_OFFSET_IMM;
+          vm_opcode = VmOpcodes::MOV_MEMORY_REG_OFFSET_IMM;
         }
       }
     } break;
@@ -196,18 +198,18 @@ VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
 
       // If call imm
       if ( operand1.type == X86_OP_IMM ) {
-        return VmOpcodes::CALL_IMMEDIATE;
+        vm_opcode = VmOpcodes::CALL_IMMEDIATE;
       }
       // if call [imm]
       else if ( IsOperandMemoryImmediate( operand1 ) ) {
-        return VmOpcodes::CALL_MEMORY;
+        vm_opcode = VmOpcodes::CALL_MEMORY;
       }
       // if call [reg + imm]
       // this is the default for winapi calls on x64
       else if ( IsOperandMemoryRegOffset( operand1 ) ) {
         // Unique case for just the RIP relative calls, those are default on win32 api calls on x64
         if ( operand1.mem.base == x86_reg::X86_REG_RIP ) {
-          return VmOpcodes::CALL_MEMORY_RIP_RELATIVE;
+          vm_opcode = VmOpcodes::CALL_MEMORY_RIP_RELATIVE;
         }
       }
     } break;
@@ -226,9 +228,9 @@ VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
       const auto& operand1 = operands[ 0 ];
 
       if ( operand1.type == x86_op_type::X86_OP_IMM ) {
-        return VmOpcodes::PUSH_IMM;
+        vm_opcode = VmOpcodes::PUSH_IMM;
       } else if ( IsOperandMemoryRegOffset( operand1 ) ) {
-        return VmOpcodes::PUSH_REGISTER_MEMORY_REG_OFFSET;
+        vm_opcode = VmOpcodes::PUSH_REGISTER_MEMORY_REG_OFFSET;
       }
     } break;
 
@@ -239,8 +241,18 @@ VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
       if ( operand1.type == x86_op_type::X86_OP_REG &&
            IsOperandMemoryRegOffset( operand2 ) ) {
         if ( operand2.mem.base == x86_reg::X86_REG_RIP ) {
-          return VmOpcodes::LEA_REG_MEMORY_IMMEDIATE_RIP_RELATIVE;
+          vm_opcode = VmOpcodes::LEA_REG_MEMORY_IMMEDIATE_RIP_RELATIVE;
         }
+      }
+    } break;
+
+      // NOTE: What type of jump is X86_INS_LJMP?
+    case x86_insn::X86_INS_JMP: {
+      const auto& operand1 = operands[ 0 ];
+
+      // jmp imm
+      if ( operand1.type == X86_OP_IMM ) {
+        vm_opcode = VmOpcodes::JMP_IMM;
       }
     } break;
 
@@ -248,7 +260,8 @@ VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
       break;
   }
 
-  return VmOpcodes::NO_OPCODE;
+  return vm_opcode;
+  //return VmOpcodes::NO_OPCODE;
 }
 
 bool IsVirtualizeable( const cs_insn& instruction, const VmOpcodes vm_opcode ) {
@@ -421,7 +434,6 @@ Shellcode CreateVirtualizedShellcode(
       const auto absolute_call_target_addr =
           GetOperandMemoryValue( operands[ 0 ] );
 
-      // Push the register index to the virtualized code
       shellcode.AddValue<uintptr_t>( absolute_call_target_addr );
     } break;
 
@@ -431,8 +443,16 @@ Shellcode CreateVirtualizedShellcode(
       const auto absolute_call_target_addr =
           GetOperandImmediateValue( operands[ 0 ] );
 
-      // Push the register index to the virtualized code
       shellcode.AddValue<uintptr_t>( absolute_call_target_addr );
+    } break;
+
+    case VmOpcodes::JMP_IMM: {
+      assert( operands[ 0 ].type == x86_op_type::X86_OP_IMM );
+
+      const auto absolute_jmp_target_addr =
+          GetOperandImmediateValue( operands[ 0 ] );
+
+      shellcode.AddValue<uintptr_t>( absolute_jmp_target_addr );
     } break;
 
       /*
@@ -780,6 +800,15 @@ Shellcode GetX86LoaderShellcodeForVirtualizedCode(
 
     // call dword ptr ds:[esp-0x4]
     shellcode.AddBytes( { 0x3E, 0xFF, 0x54, 0x24, 0xFC } );
+  } else if ( vm_opcode == VmOpcodes::JMP_IMM ) {
+    // Remove the jmp addr from the stack
+    // Before jmp back:
+    // add esp, 4
+    shellcode.AddBytes( { 0x83, 0xC4, 0x04 } );
+
+    // Jump to the absolute target location
+    // jmp dword ptr ss:[esp-0x4]
+    shellcode.AddBytes( { 0xFF, 0x64, 0x24, 0xFC } );
   }
 
   shellcode.AddByte( 0xE9 );  // jmp
@@ -977,6 +1006,15 @@ Shellcode GetX64LoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
     // Call the function that was pushed to the stack
     // call qword ptr ds:[rsp-0x8]
     shellcode.AddBytes( { 0x3E, 0xFF, 0x54, 0x24, 0xF8 } );
+  } else if ( vm_opcode == VmOpcodes::JMP_IMM ) {
+    // Remove the pushed value from the stack
+    // Before jmp back:
+    // add rsp, 8
+    shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x08 } );
+
+    // Jump to the absolute target location
+    // jmp qword ptr ss:[rsp-0x8]
+    shellcode.AddBytes( { 0xFF, 0x64, 0x24, 0xF8 } );
   }
 
   shellcode.AddByte( 0xE9 );  // jmp

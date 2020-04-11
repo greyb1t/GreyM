@@ -38,7 +38,19 @@ __declspec( dllexport ) int WINAPI EntryPoint( HINSTANCE instance,
 */
 
 __declspec( dllexport ) void NTAPI
-    TlsCallback( PVOID DllHandle, DWORD Reason, PVOID Reserved ) {}
+    TlsCallback( PVOID DllHandle, DWORD Reason, PVOID Reserved ) {
+  // TODO: Fix the imports in this tls callback, OR, add another dynamic TLS callback and fix the imports in that.
+  // Meaning we have to let the protector ruin the imports
+
+  // Read here to ruin the imports: https://github.com/namreeb/dumpwow/blob/master/dll/dumper.cpp
+
+  // Flow:
+  // 1. Decrypt the sections, extra layer to waste time
+  // 2. Remap
+  // 3. Check integrity that was written in a data section by the protector
+  // 4. Try to modify the remapped memory to ensure that it was properly remapped and no disgusting things occur.
+  //    Ensure that when we try to modify it, do not use an API call that can be hooked
+}
 
 void PushValueToRealStack( VmContext* vm_context, uintptr_t value ) {
   const auto current_registers_address =
@@ -481,6 +493,20 @@ __declspec( dllexport ) int32_t
           *( uintptr_t* )( reg_src_value + reg_src_disp );
 
       PushValueToRealStack( vm_context, value_to_push );
+    } break;
+
+    case VmOpcodes::JMP_IMM: {
+      // NOTE: I do not think this can be relocated
+
+      auto absolute_jmp_target_addr = ReadValue<uintptr_t>( &code );
+
+      // add the image base
+      absolute_jmp_target_addr += image_base_address;
+
+      PushValueToRealStack( vm_context, absolute_jmp_target_addr );
+
+      // when exiting the vm (before jmp back), push return address
+      // then jmp to
     } break;
 
       // case VmOpcodes::JUMP_RELATIVE:

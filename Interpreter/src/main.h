@@ -54,6 +54,9 @@ enum class VmOpcodes : uint32_t {
   PUSH_IMM = 0x31CBE5B1,
   PUSH_REGISTER_MEMORY_REG_OFFSET = 0x0BBF011A,  // push dword ptr [eax + 0x9c]
 
+  // jmp imm
+  JMP_IMM = 0xCA38B49B,
+
   NO_OPCODE = 0x0
 };
 
