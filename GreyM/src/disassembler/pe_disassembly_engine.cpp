@@ -336,12 +336,38 @@ bool PeDisassemblyEngine::IsFunction( const uint8_t* code,
 #endif
 }
 
+// Returns true whether or not the instructions are the pattern:
+// push ebp
+// mov ebp, esp
+bool IsFunctionX86Prologue( cs_insn instructions[ 2 ] ) {
+  // Ensure the instructions have the correct operand counts
+  if ( instructions[ 0 ].detail->x86.op_count != 1 &&
+       instructions[ 1 ].detail->x86.op_count != 2 ) {
+    return false;
+  }
+
+  bool is_push_ebp =
+      instructions[ 0 ].id == x86_insn::X86_INS_PUSH &&
+      instructions[ 0 ].detail->x86.operands[ 0 ].reg == x86_reg::X86_REG_EBP;
+
+  bool is_mov_ebp_esp =
+      instructions[ 1 ].id == x86_insn::X86_INS_MOV &&
+      instructions[ 1 ].detail->x86.operands[ 0 ].reg == x86_reg::X86_REG_EBP &&
+      instructions[ 1 ].detail->x86.operands[ 1 ].reg == x86_reg::X86_REG_ESP;
+
+  return is_push_ebp && is_mov_ebp_esp;
+}
+
 bool PeDisassemblyEngine::IsFunctionX86( const uint8_t* code,
                                          const uintptr_t rva,
                                          int recursion_counter ) {
   // we only try to follow jumps 10 times deep
   if ( recursion_counter > 10 )
     return false;
+
+  // Added a temporary check to know whether or not we might even check if code is a function in a non-.text section
+  // If this ever occurs, simply change it to an if statement and return false it not in .text section
+  assert( section::IsRvaWithinSection( *pe_text_section_header_, rva ) );
 
   cs_insn* instructions = nullptr;
 
@@ -377,33 +403,25 @@ bool PeDisassemblyEngine::IsFunctionX86( const uint8_t* code,
                           jump_dest_disasm_point.rva, ++recursion_counter );
   }
 
+  bool is_function = false;
+
   // if the first instruction is mov edi, edi
   if ( instruction1->id == x86_insn::X86_INS_MOV &&
        instruction1->detail->x86.op_count == 2 &&
        instruction1->detail->x86.operands[ 0 ].reg == x86_reg::X86_REG_EDI &&
        instruction1->detail->x86.operands[ 1 ].reg == x86_reg::X86_REG_EDI ) {
-    instruction1 = &instructions[ 1 ];
-    instruction2 = &instructions[ 2 ];
+    // Check the function prologue on the next instructions skipping the mov edi, edi
+    is_function = IsFunctionX86Prologue( instructions + 1 );
+  } else {
+    is_function = IsFunctionX86Prologue( instructions );
   }
 
-  if ( instruction1->detail->x86.op_count != 1 )
-    return false;
+  // TODO: Check for the epilogue as well
+  // mov esp, ebp         ; restore ESP
+  // pop ebp              ; restore caller's EBP
+  // ret                  ; pop the return address into EIP
 
-  if ( instruction1->id != x86_insn::X86_INS_PUSH ||
-       instruction1->detail->x86.operands[ 0 ].reg != x86_reg::X86_REG_EBP )
-    return false;
-
-  if ( instruction2->id != x86_insn::X86_INS_MOV ||
-       instruction2->detail->x86.op_count != 2 ) {
-    return false;
-  }
-
-  if ( instruction2->detail->x86.operands[ 0 ].reg != x86_reg::X86_REG_EBP ||
-       instruction2->detail->x86.operands[ 1 ].reg != x86_reg::X86_REG_ESP ) {
-    return false;
-  }
-
-  return true;
+  return is_function;
 }
 
 bool PeDisassemblyEngine::IsFunctionX64( const uint8_t* code,
@@ -756,10 +774,10 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
   return DisassemblyAction::NextInstruction;
 }
 
-bool PeDisassemblyEngine::ContinueFromRedirectionInstructions() {
-  // check if there is nothing more to disassemble
-  if ( disassembly_points_.size() <= 0 )
+bool PeDisassemblyEngine::ContinueFromDisassemblyPoints() {
+  if ( disassembly_points_.empty() ) {
     return false;
+  }
 
   const auto next_disasm_point = disassembly_points_.back();
 
@@ -778,43 +796,41 @@ void PeDisassemblyEngine::ParseRDataSection() {
     throw std::runtime_error( ".rdata was not found" );
   }
 
-  // TODO: Check x64 if the function pointer size is 4 or 8 bits
+  const auto pe_image_ptr = pe_.GetPeImagePtr();
 
-  auto pe_image_ptr = const_cast<uint8_t*>( pe_.GetPeImagePtr() );
+  auto rdata_ptr = pe_image_ptr + rdata_section_header->PointerToRawData;
 
-  for ( uint32_t i = 0; i < rdata_section_header->SizeOfRawData;
-        i += sizeof( uintptr_t ) ) {
-    const auto raw_file_data = rdata_section_header->PointerToRawData + i;
-    const auto raw_file_data_value =
-        *reinterpret_cast<uintptr_t*>( pe_image_ptr + raw_file_data );
+  const auto rdata_end = rdata_ptr + rdata_section_header->SizeOfRawData;
 
-    // if the value (to be address) is 0, it is not function pointer
-    if ( !raw_file_data_value )
+  for ( ; rdata_ptr < rdata_end; rdata_ptr += sizeof( uintptr_t ) ) {
+    const auto value = *reinterpret_cast<const uintptr_t*>( rdata_ptr );
+
+    if ( value == 0 ) {
       continue;
+    }
 
-    // TODO: Check x64 if we need to remove image base or not
-    const auto possible_function_pointer_rva =
-        raw_file_data_value - pe_image_base_;
+    // We subtract the image base to check whether or not it is a valid RVA value
+    const auto value_rva = value - pe_image_base_;
 
-    if ( section::IsRvaWithinSection( *pe_text_section_header_,
-                                      possible_function_pointer_rva ) ) {
-      const auto possible_function_pointer_offset =
-          pe_section_headers_.RvaToFileOffset( possible_function_pointer_rva );
+    // Is the rva valid and within the .text section?
+    if ( section::IsRvaWithinSection( *pe_text_section_header_, value_rva ) ) {
+      const auto value_file_offset =
+          pe_section_headers_.RvaToFileOffset( value_rva );
 
-      if ( !possible_function_pointer_offset )
+      if ( value_file_offset == 0 ) {
         continue;
+      }
 
-      const auto possible_function_pointer_code =
-          pe_image_ptr + possible_function_pointer_offset;
-      if ( IsFunction( possible_function_pointer_code,
-                       possible_function_pointer_rva ) ) {
+      const auto value_destination_ptr = pe_image_ptr + value_file_offset;
+
+      if ( IsFunction( value_destination_ptr, value_rva ) ) {
         DisassemblyPoint disasm_point;
-        disasm_point.code =
-            const_cast<uint8_t*>( possible_function_pointer_code );
-        disasm_point.rva = possible_function_pointer_rva;
+        {
+          disasm_point.code = value_destination_ptr;
+          disasm_point.rva = value_rva;
+        }
+
         AddDisassemblyPoint( disasm_point );
-      } else {
-        int test = 0;
       }
     }
   }
@@ -822,12 +838,11 @@ void PeDisassemblyEngine::ParseRDataSection() {
 
 void PeDisassemblyEngine::AddDisassemblyPoint(
     const DisassemblyPoint& disasm_point ) {
-  // if the point of disassembly already exists, do not add it again
-  if ( disassembly_points_cache_.find( disasm_point.rva ) !=
-       disassembly_points_cache_.end() ) {
-    return;
-  }
+  const bool exists = disassembly_points_cache_.find( disasm_point.rva ) !=
+                      disassembly_points_cache_.end();
 
-  disassembly_points_.push_back( disasm_point );
-  disassembly_points_cache_.insert( disasm_point.rva );
+  if ( !exists ) {
+    disassembly_points_.push_back( disasm_point );
+    disassembly_points_cache_.insert( disasm_point.rva );
+  }
 }

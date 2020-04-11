@@ -93,7 +93,7 @@ class PeDisassemblyEngine {
 
   // ContinueFromRedirectionInstructions returns false if no more instructions
   // are found
-  bool ContinueFromRedirectionInstructions();
+  bool ContinueFromDisassemblyPoints();
 
   // Finds all the virtual functions in the rdata section
   void ParseRDataSection();
@@ -169,7 +169,7 @@ void PeDisassemblyEngine::BeginDisassemblingMinimal(
     // are we outside the buffer?
     if ( ( code_buf_size_ - current_code_index_ ) <= 0 ) {
       // try to continue from the saved disassembly points
-      if ( !ContinueFromRedirectionInstructions() ) {
+      if ( !ContinueFromDisassemblyPoints() ) {
         finished = true;
         break;
       }
@@ -189,7 +189,7 @@ void PeDisassemblyEngine::BeginDisassemblingMinimal(
       // continue disassembling instructions from the saved redirection
       // instructions
 
-      if ( !ContinueFromRedirectionInstructions() ) {
+      if ( !ContinueFromDisassemblyPoints() ) {
         finished = true;
         break;
       }
@@ -213,7 +213,7 @@ void PeDisassemblyEngine::BeginDisassemblingMinimal(
       } break;
 
       case DisassemblyAction::NextDisassemblyPoint: {
-        if ( !ContinueFromRedirectionInstructions() ) {
+        if ( !ContinueFromDisassemblyPoints() ) {
           finished = true;
           break;
         }
@@ -243,7 +243,7 @@ void PeDisassemblyEngine::BeginDisassembling(
     // are we outside the buffer?
     if ( ( code_buf_size_ - current_code_index_ ) <= 0 ) {
       // try to continue from the saved disassembly points
-      if ( !ContinueFromRedirectionInstructions() ) {
+      if ( !ContinueFromDisassemblyPoints() ) {
         finished = true;
         break;
       }
@@ -259,7 +259,7 @@ void PeDisassemblyEngine::BeginDisassembling(
          IsAddressWithinDataSectionOfCode( address_ ) ) {
       // continue disassembling instructions from the saved redirection
       // instructions
-      if ( !ContinueFromRedirectionInstructions() ) {
+      if ( !ContinueFromDisassemblyPoints() ) {
         finished = true;
         break;
       }
@@ -273,7 +273,7 @@ void PeDisassemblyEngine::BeginDisassembling(
       // on an instruction from the disassembly points
       // At the end of the disassembling, we fix the invalid instructions
 
-      if ( !ContinueFromRedirectionInstructions() ) {
+      if ( !ContinueFromDisassemblyPoints() ) {
         finished = true;
         break;
       }
@@ -297,7 +297,7 @@ void PeDisassemblyEngine::BeginDisassembling(
       } break;
 
       case DisassemblyAction::NextDisassemblyPoint: {
-        if ( !ContinueFromRedirectionInstructions() ) {
+        if ( !ContinueFromDisassemblyPoints() ) {
           finished = true;
           break;
         }
