@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "pe_disassembly_engine.h"
-#include "../utils/safe_instruction.h"
+#include "../utils/defer.h"
 
 PeDisassemblyEngine::PeDisassemblyEngine( const PortableExecutable pe )
     : pe_( pe ),
@@ -157,11 +157,7 @@ bool PeDisassemblyEngine::IsJumpTableX64( const cs_insn& instruction,
         uint64_t rva_copy = rva + static_cast<uint64_t>( instruction.size );
 
         cs_insn* instruction2 = cs_malloc( disassembler_handle_ );
-
-        // absolutely disgusting way to do this, however, it work, whatever
-        // set to free 1 instruction
-        SafeInstructions safe_instruction = 1;
-        safe_instruction.SetInstructions( instruction2 );
+        Defer( { cs_free( instruction2, 1 ); } );
 
         // disassemble first instruction
         auto disasm_status =
@@ -225,7 +221,7 @@ PeDisassemblyEngine::GetOperandDestinationValueDisassasemblyPoint(
 
   DisassemblyPoint disasm_point;
   disasm_point.rva = operand_dest_rva;
-  disasm_point.code = const_cast<uint8_t*>( operand_dest_code );
+  disasm_point.code = operand_dest_code;
 
   return disasm_point;
 }
@@ -327,19 +323,18 @@ bool PeDisassemblyEngine::IsAddressWithinDataSectionOfCode(
   return false;
 };
 
-bool PeDisassemblyEngine::IsFunction( const uint8_t* code,
-                                      const uintptr_t rva ) {
+bool PeDisassemblyEngine::IsFunction( const DisassemblyPoint& disasm_point ) {
 #ifdef _WIN64
-  return IsFunctionX64( code, rva );
+  return IsFunctionX64( disasm_point );
 #else
-  return IsFunctionX86( code, rva, 0 );
+  return IsFunctionX86( disasm_point, 0 );
 #endif
 }
 
 // Returns true whether or not the instructions are the pattern:
 // push ebp
 // mov ebp, esp
-bool IsFunctionX86Prologue( cs_insn instructions[ 2 ] ) {
+bool IsFunctionX86Prolog( cs_insn instructions[ 2 ] ) {
   // Ensure the instructions have the correct operand counts
   if ( instructions[ 0 ].detail->x86.op_count != 1 &&
        instructions[ 1 ].detail->x86.op_count != 2 ) {
@@ -358,9 +353,11 @@ bool IsFunctionX86Prologue( cs_insn instructions[ 2 ] ) {
   return is_push_ebp && is_mov_ebp_esp;
 }
 
-bool PeDisassemblyEngine::IsFunctionX86( const uint8_t* code,
-                                         const uintptr_t rva,
+bool PeDisassemblyEngine::IsFunctionX86( const DisassemblyPoint& disasm_point,
                                          int recursion_counter ) {
+  const auto rva = disasm_point.rva;
+  const auto code = disasm_point.code;
+
   // we only try to follow jumps 10 times deep
   if ( recursion_counter > 10 )
     return false;
@@ -375,14 +372,13 @@ bool PeDisassemblyEngine::IsFunctionX86( const uint8_t* code,
 
   const auto kDisassembleInstructionCount = 3;
 
-  SafeInstructions disassembled_instructions_count = cs_disasm(
+  const auto disassembled_instruction_count = cs_disasm(
       disassembler_handle_, code, code_buf_size_ - current_code_index_, rva,
       kDisassembleInstructionCount, &instructions );
 
-  disassembled_instructions_count.SetInstructions( instructions );
+  Defer( { cs_free( instructions, disassembled_instruction_count ); } );
 
-  if ( disassembled_instructions_count.GetDisassembledInstructionCount() !=
-       kDisassembleInstructionCount ) {
+  if ( disassembled_instruction_count != kDisassembleInstructionCount ) {
     return false;
   }
 
@@ -399,8 +395,7 @@ bool PeDisassemblyEngine::IsFunctionX86( const uint8_t* code,
                                        jump_dest_disasm_point.rva ) )
       return false;
 
-    return IsFunctionX86( jump_dest_disasm_point.code,
-                          jump_dest_disasm_point.rva, ++recursion_counter );
+    return IsFunctionX86( jump_dest_disasm_point, ++recursion_counter );
   }
 
   bool is_function = false;
@@ -411,9 +406,9 @@ bool PeDisassemblyEngine::IsFunctionX86( const uint8_t* code,
        instruction1->detail->x86.operands[ 0 ].reg == x86_reg::X86_REG_EDI &&
        instruction1->detail->x86.operands[ 1 ].reg == x86_reg::X86_REG_EDI ) {
     // Check the function prologue on the next instructions skipping the mov edi, edi
-    is_function = IsFunctionX86Prologue( instructions + 1 );
+    is_function = IsFunctionX86Prolog( instructions + 1 );
   } else {
-    is_function = IsFunctionX86Prologue( instructions );
+    is_function = IsFunctionX86Prolog( instructions );
   }
 
   // TODO: Check for the epilogue as well
@@ -424,94 +419,172 @@ bool PeDisassemblyEngine::IsFunctionX86( const uint8_t* code,
   return is_function;
 }
 
-bool PeDisassemblyEngine::IsFunctionX64( const uint8_t* code,
-                                         const uintptr_t rva ) {
+bool IsNonVolatileRegister( x86_reg reg ) {
   /*
-    mov qword ptr ss:[rsp + 18], r8
-    mov qword ptr ss:[rsp + 10], rdx
-    mov qword ptr ss:[rsp + 8], rcx
-    movs [...]
-    ..
-    sub rsp, imm
-
-    if the function begins with a mov
-    then the first mov uses rsp + imm
-    that imm should be (imm % 8 == 0)
-
-    if imm > 8
-      imm -= 8;
-
-    check next mov
-
-    redo
-
-    Function Example:
-      mov byte ptr ss:[rsp+20],r9b
-      mov byte ptr ss:[rsp+18],r8b
-      mov qword ptr ss:[rsp+10],rdx
-      mov qword ptr ss:[rsp+8],rcx
-      push rbp
-      push rdi
-      sub rsp,218
+    Nonvolatilve Registers that must be preseved by the callee:
+      R12:R15
+      RDI
+      RSI
+      RBX
+      RBP
+      RSP
   */
 
-  assert( ( code_buf_size_ - current_code_index_ ) > 0 );
+  switch ( reg ) {
+    case x86_reg::X86_REG_R12:
+    case x86_reg::X86_REG_R13:
+    case x86_reg::X86_REG_R14:
+    case x86_reg::X86_REG_R15:
+    case x86_reg::X86_REG_RDI:
+    case x86_reg::X86_REG_RSI:
+    case x86_reg::X86_REG_RBX:
+    case x86_reg::X86_REG_RBP:
+    case x86_reg::X86_REG_RSP:
+      return true;
+      break;
+    default:
+      break;
+  }
 
-  auto code_copy = code;
-  auto code_size = code_buf_size_ - current_code_index_;
-  uint64_t rva_copy = rva;
+  return false;
+};
+
+bool PeDisassemblyEngine::IsFunctionX64(
+    const DisassemblyPoint& disasm_point ) {
+  assert( ( code_buf_size_ - current_code_index_ ) > 0 );
+  bool is_function = false;
+
+  // NOTE: Unsure whether or not this size is correctly calculated, feels off
+  auto size = code_buf_size_ - current_code_index_;
+
+  auto code = disasm_point.code;
+  auto rva = static_cast<uint64_t>( disasm_point.rva );
 
   cs_insn* instruction = cs_malloc( disassembler_handle_ );
+  Defer( { cs_free( instruction, 1 ); } );
 
-  // absolutely disgusting way to do this, however, it work, whatever
-  // set to free 1 instruction
-  SafeInstructions safe_instruction = 1;
-  safe_instruction.SetInstructions( instruction );
+  const auto disasm_status =
+      cs_disasm_iter( disassembler_handle_, &code, &size, &rva, instruction );
 
-  // disassemble first instruction
-  auto disasm_status = cs_disasm_iter( disassembler_handle_, &code_copy,
-                                       &code_size, &rva_copy, instruction );
-
-  // if the disassembly attempt failed, then invalid instruction
-  if ( !disasm_status )
+  if ( !disasm_status ) {
+    // If it failed to disassemble the first instruction, it is definitely not a function
     return false;
+  }
 
+  assert( instruction );
+
+  // Is the first instruction a jump to the real function?
   if ( IsGuaranteedJump( *instruction ) ) {
     const auto& operand = instruction->detail->x86.operands[ 0 ];
     const auto jump_target_rva = operand.imm;
     const auto jump_dest_disasm_point =
         GetOperandDestinationValueDisassasemblyPoint(
-            *instruction, code, static_cast<uintptr_t>( jump_target_rva ) );
+            *instruction, disasm_point.code,
+            static_cast<uintptr_t>( jump_target_rva ) );
 
     if ( !section::IsRvaWithinSection( *pe_text_section_header_,
-                                       jump_dest_disasm_point.rva ) )
+                                       jump_dest_disasm_point.rva ) ) {
       return false;
+    }
 
-    return IsFunctionX64( jump_dest_disasm_point.code,
-                          jump_dest_disasm_point.rva );
+    is_function = IsFunctionX64Prolog( jump_dest_disasm_point );
+  } else {
+    is_function = IsFunctionX64Prolog( disasm_point );
   }
 
-  // checks if an instruction is mov [rsp + ?], reg
-  const auto is_instruction_mov_rsp_plus_disp_reg =
-      []( const cs_insn* instruction ) -> bool {
-    // is mov op, op
-    if ( instruction->id == x86_insn::X86_INS_MOV &&
-         instruction->detail->x86.op_count == 2 ) {
-      const auto operand1 = &instruction->detail->x86.operands[ 0 ];
+  return is_function;
+}
 
-      // is mov [rsp + ?], op
-      if ( operand1->type == x86_op_type::X86_OP_MEM &&
-           operand1->mem.base == x86_reg::X86_REG_RSP ) {
-        const auto op1_value = operand1->mem.disp;
+bool PeDisassemblyEngine::IsFunctionX64Prolog(
+    const DisassemblyPoint& disasm_point ) {
+  /*
+    NOTE: Epilog checking is no longer implemented, it was too inconsistent
 
-        // if the disp is 0, then we missing the + ? in the above instruction
-        // comment
-        assert( op1_value != 0 );
+    https://docs.microsoft.com/en-us/cpp/build/prolog-and-epilog?view=vs-2019
+    https://docs.microsoft.com/en-us/cpp/build/x64-software-conventions?view=vs-2019
 
-        const auto operand2 = &instruction->detail->x86.operands[ 1 ];
+    Checks if valid x64 function prolog
+    What's requirements of valid prolog?
 
-        // is mov [rsp + ?], reg
-        if ( operand2->type == x86_op_type::X86_OP_REG ) {
+    * First instruction of prolog must exist within 10/5/2 first instructions
+
+    * Must contain at least one type of fixed-stack-alloc instruction
+        sub rsp, stack-alloc-size
+        or
+        lea    R13, 128[RSP] ????
+
+    * If it contains more prolog instructions, all of them must be valid prolog instructions
+      The following are valid:
+        mov [rsp + any-value % 8 == 0 ], reg (any reg?)
+        push non-volatile-reg
+
+        mov rax, rsp
+        mov [rax + any-value % 8 == 0], reg (any reg?)
+
+
+    What does this function do?
+    It simply looks for the prolog in the beginning.
+
+    Example x64 function:
+
+    Prolog Description:
+    1. MOV's
+      Sets up the stack frame pointer for either RSP or RAX, possibly other registers as well. Unsure.
+    2. PUSH's
+      Preserves the non volatile registers
+    3. SUB
+      Allocated a fixed size of the stack
+
+    Prolog:
+    mov    [RSP + 8], RCX
+    push   R15
+    push   R14
+    push   R13
+    sub    RSP, 20
+
+    Epilog Description:
+    1. MOV's
+      Tears up the frame pointer and gives back the values on the registers previously.
+    2. ADD
+      Free's the fixed allocated stack
+    3. POP's
+      Restores the non-volatile registers in the opposite order of the prolog
+    4. RET
+
+    Epilog:
+
+    mov    RCX, [RSP + 8]
+    add    RSP, 20
+    pop    R13
+    pop    R14
+    pop    R15
+    ret
+  */
+
+  const auto is_stack_frame_pointer_setup = []( cs_insn* instruction ) {
+    // NOTE: In some functions, the instruction: mov rax, rsp
+    //                                          mov r11, rsp
+    // which sets up the stack frame pointer.
+    // the registers are moved into [rax + ?] and not [rsp + ?]
+
+    // mov r11, rsp          <--- This is the stack frame pointer setup
+    // mov [r11 + 8], rbx
+    // mov [r11 + 16], rsi
+    // push rdi
+    // sub rsp, 80
+
+    const auto& detail = instruction->detail->x86;
+
+    // is mov ?, ?
+    if ( instruction->id == x86_insn::X86_INS_MOV && detail.op_count == 2 ) {
+      const auto& operand1 = detail.operands[ 0 ];
+      const auto& operand2 = detail.operands[ 1 ];
+
+      // is mov reg, reg
+      if ( operand1.type == x86_op_type::X86_OP_REG &&
+           operand2.type == x86_op_type::X86_OP_REG ) {
+        // is mov reg, rsp
+        if ( operand2.reg == x86_reg::X86_REG_RSP ) {
           return true;
         }
       }
@@ -520,58 +593,269 @@ bool PeDisassemblyEngine::IsFunctionX64( const uint8_t* code,
     return false;
   };
 
-  uint32_t total_movs_in_order = 0;
+  const auto is_valid_stack_frame_pointer_setup_instruction =
+      []( cs_insn* instruction, x86_reg stack_frame_pointer_reg ) {
+        // mov r11, rsp
+        // mov [r11 + 8], rbx       <--- This is the stack frame pointer setup instruction
+        // mov [r11 + 16], rsi      <--- This is the stack frame pointer setup instruction
+        // push rdi
+        // sub rsp, 80
 
-  if ( !is_instruction_mov_rsp_plus_disp_reg( instruction ) )
-    return false;
+        const auto& detail = instruction->detail->x86;
 
-  const auto op1_value = instruction->detail->x86.operands[ 0 ].mem.disp;
+        // is mov ?, ?
+        if ( instruction->id == x86_insn::X86_INS_MOV &&
+             detail.op_count == 2 ) {
+          const auto& operand1 = detail.operands[ 0 ];
 
-  // is it divisible by 8?
-  if ( op1_value % 8 == 0 ) {
-    total_movs_in_order = static_cast<uint32_t>(
-        op1_value / 8 - 1 );  // 8 is the size of a uint64_t
-  } else {
-    return false;
-  }
+          // is mov [stack_frame_pointer_reg + ?], ?
+          if ( operand1.type == x86_op_type::X86_OP_MEM &&
+               operand1.mem.base == stack_frame_pointer_reg ) {
+            const bool is_on_a_x64_alignment =
+                operand1.mem.disp % sizeof( uint64_t ) == 0;
 
-  // disassemble the following movs calculacted by the first mov instruction
-  for ( uint32_t i = 0; i < total_movs_in_order; ++i ) {
-    auto disasm_status = cs_disasm_iter( disassembler_handle_, &code_copy,
-                                         &code_size, &rva_copy, instruction );
+            const auto& operand2 = detail.operands[ 1 ];
 
-    if ( !disasm_status )
-      return false;
-
-    // is the instruction a correct mov?
-    if ( !is_instruction_mov_rsp_plus_disp_reg( instruction ) )
-      return false;
-  }
-
-  // disassemble until we reach a sub rsp, imm instruction
-  // limit on 10 instructions
-  for ( int i = 0; i < 10; ++i ) {
-    auto disasm_status = cs_disasm_iter( disassembler_handle_, &code_copy,
-                                         &code_size, &rva_copy, instruction );
-
-    if ( !disasm_status )
-      return false;
-
-    if ( instruction->id == x86_insn::X86_INS_SUB ) {
-      if ( instruction->detail->x86.op_count == 2 ) {
-        const auto& op1 = instruction->detail->x86.operands[ 0 ];
-        if ( op1.type == x86_op_type::X86_OP_REG &&
-             op1.reg == x86_reg::X86_REG_RSP ) {
-          const auto& op2 = instruction->detail->x86.operands[ 1 ];
-          if ( op2.type == x86_op_type::X86_OP_IMM ) {
-            return true;
+            // is mov [rsp + ?], reg
+            if ( operand2.type == x86_op_type::X86_OP_REG &&
+                 is_on_a_x64_alignment ) {
+              return true;
+            }
           }
+        }
+
+        return false;
+      };
+
+  const auto is_valid_preserve_reg_instruction = []( cs_insn* instruction,
+                                                     x86_insn instruction_id ) {
+    // mov r11, rsp
+    // mov [r11 + 8], rbx
+    // mov [r11 + 16], rsi
+    // push rdi                 <--- This is the preserve register instruction
+    // sub rsp, 80
+
+    const auto& detail = instruction->detail->x86;
+
+    // is push ?
+    if ( instruction->id == instruction_id && detail.op_count == 1 ) {
+      const auto& operand = detail.operands[ 0 ];
+
+      // is push reg
+      if ( operand.type == x86_op_type::X86_OP_REG ) {
+        // is push non-volatile-reg
+        if ( IsNonVolatileRegister( operand.reg ) ) {
+          return true;
         }
       }
     }
+
+    return false;
+  };
+
+  const auto is_valid_push = [&]( cs_insn* instruction ) {
+    return is_valid_preserve_reg_instruction( instruction,
+                                              x86_insn::X86_INS_PUSH );
+  };
+
+  const auto is_valid_fixed_stack_instruction = []( cs_insn* instruction,
+                                                    x86_insn instruction_id ) {
+    // mov r11, rsp
+    // mov [r11 + 8], rbx
+    // mov [r11 + 16], rsi
+    // push rdi
+    // sub rsp, 80            <--- This is the fixed stack alloc instruction
+
+    const auto& detail = instruction->detail->x86;
+
+    // is sub ?, ?
+    if ( instruction->id == instruction_id && detail.op_count == 2 ) {
+      const auto& operand1 = detail.operands[ 0 ];
+
+      // is sub rsp, ?
+      if ( operand1.type == x86_op_type::X86_OP_REG &&
+           operand1.reg == x86_reg::X86_REG_RSP ) {
+        const auto& operand2 = detail.operands[ 1 ];
+
+        // Unique case if the stack allocated is larger than a page of
+        // memory, handle when occurs to know if correct
+        assert( operand2.imm < 0x1000 );
+
+        // is sub rsp, imm
+        if ( operand2.type == x86_op_type::X86_OP_IMM ) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  };
+
+  const auto is_valid_sub = [&]( cs_insn* instruction ) {
+    return is_valid_fixed_stack_instruction( instruction,
+                                             x86_insn::X86_INS_SUB );
+  };
+
+  auto code = disasm_point.code;
+  auto rva = static_cast<uint64_t>( disasm_point.rva );
+
+  // NOTE: Unsure whether or not this size is correctly calculated, feels off
+  auto size = code_buf_size_ - current_code_index_;
+
+  cs_insn* instruction = cs_malloc( disassembler_handle_ );
+  Defer( { cs_free( instruction, 1 ); } );
+
+  uint32_t setup_stackframe_pointer_instructions_count = 0;
+  uint32_t preserved_registers_count = 0;
+  bool has_allocating_stack_instruction = false;
+
+  enum class PrologSteps {
+    FindStackFramePointerRegister,
+    FindStackFramePointerSetup,
+    FindPreserveNonVolatileRegisters,
+    FindFixedStack,
+  };
+
+  PrologSteps current_prolog_step = PrologSteps::FindStackFramePointerRegister;
+
+  bool is_function = false;
+
+  bool next_instruction = true;
+
+  bool finished = false;
+
+  constexpr x86_reg kDefaultStackFramePointerReg = x86_reg::X86_REG_RSP;
+  x86_reg stack_frame_pointer_reg = kDefaultStackFramePointerReg;
+
+  cs_insn* first_instruction = cs_malloc( disassembler_handle_ );
+
+  Defer( { cs_free( first_instruction, 1 ); } );
+
+  auto code_copy = code;
+  auto rva_copy = rva;
+  auto size_copy = size;
+
+  const auto disasm_status =
+      cs_disasm_iter( disassembler_handle_, &code_copy, &size_copy, &rva_copy,
+                      first_instruction );
+
+  if ( !disasm_status ) {
+    // Is no function
+    return false;
   }
 
-  return false;
+  const bool is_prolog_instruction =
+      is_stack_frame_pointer_setup( first_instruction ) ||
+      is_valid_stack_frame_pointer_setup_instruction(
+          first_instruction, stack_frame_pointer_reg ) ||
+      is_valid_push( first_instruction ) || is_valid_sub( first_instruction );
+
+  // If the first instruction is not a instruction valid for the prolog
+  if ( !is_prolog_instruction ) {
+    // Is no function
+    return false;
+  }
+
+  while ( !finished ) {
+    if ( next_instruction ) {
+      const auto disasm_status = cs_disasm_iter( disassembler_handle_, &code,
+                                                 &size, &rva, instruction );
+
+      // If it failed to disassemble the instruction, we cannot
+      // only assume we have reached invalid executable code
+      if ( !disasm_status ) {
+        is_function = false;
+        finished = true;
+        break;
+      }
+
+      const bool is_interrupt = cs_insn_group(
+          disassembler_handle_, instruction, cs_group_type::CS_GRP_INT );
+
+      const bool is_ret = cs_insn_group( disassembler_handle_, instruction,
+                                         cs_group_type::CS_GRP_RET );
+
+      // If the instruction is an e.g INT3, then we have gone outside the bounds of the function
+      if ( is_interrupt || is_ret ) {
+        is_function = false;
+        finished = true;
+        break;
+      }
+
+      next_instruction = false;
+    }
+
+    switch ( current_prolog_step ) {
+      case PrologSteps::FindStackFramePointerRegister: {
+        if ( is_stack_frame_pointer_setup( instruction ) ) {
+          // Save the stack frame pointer register for use in the next step
+          stack_frame_pointer_reg = instruction->detail->x86.operands[ 0 ].reg;
+          next_instruction = true;
+        }
+
+        // If the first instruction is not this, we assume it will never
+        // go the next or next one again. Therefore we go immediately to the next step
+        current_prolog_step = PrologSteps::FindStackFramePointerSetup;
+      } break;
+
+      case PrologSteps::FindStackFramePointerSetup: {
+        if ( is_valid_stack_frame_pointer_setup_instruction(
+                 instruction, stack_frame_pointer_reg ) ) {
+          ++setup_stackframe_pointer_instructions_count;
+          next_instruction = true;
+        } else {
+          // If there are no stack frame pointer setup instructions, BUT there is a stack frame pointer register setup
+          // Then it is really fuckin' fishy bruh. Probably not a function.
+          if ( stack_frame_pointer_reg != kDefaultStackFramePointerReg &&
+               setup_stackframe_pointer_instructions_count <= 0 ) {
+            is_function = false;
+            finished = true;
+            break;
+          }
+
+          current_prolog_step = PrologSteps::FindPreserveNonVolatileRegisters;
+        }
+      } break;
+
+      case PrologSteps::FindPreserveNonVolatileRegisters: {
+        if ( is_valid_push( instruction ) ) {
+          ++preserved_registers_count;
+          next_instruction = true;
+        } else {
+          current_prolog_step = PrologSteps::FindFixedStack;
+        }
+      } break;
+
+      case PrologSteps::FindFixedStack: {
+        if ( is_valid_sub( instruction ) ) {
+          has_allocating_stack_instruction = true;
+        } else {
+          has_allocating_stack_instruction = false;
+        }
+
+        // Require that we have preserved registers and allocated a
+        // stack in a prolog for to be a valid function
+        const bool prolog_exists =
+            preserved_registers_count > 0 && has_allocating_stack_instruction;
+
+        // If no prolog exists, it is no valid function
+        if ( !prolog_exists ) {
+          is_function = false;
+          finished = true;
+          break;
+        } else {
+          is_function = true;
+          finished = true;
+          break;
+        }
+      } break;
+      default:
+        assert( false );
+        break;
+    }
+  }
+
+  return is_function;
 }
 
 DisassemblyAction PeDisassemblyEngine::ParseInstruction(
@@ -672,8 +956,7 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
               // .rdata section or something
               if ( section::IsRvaWithinSection( *pe_text_section_header_,
                                                 dest_disasm_point.rva ) &&
-                   IsFunction( dest_disasm_point.code,
-                               dest_disasm_point.rva ) ) {
+                   IsFunction( dest_disasm_point ) ) {
                 AddDisassemblyPoint( dest_disasm_point );
                 return DisassemblyAction::NextInstruction;
               } else {
@@ -759,7 +1042,7 @@ DisassemblyAction PeDisassemblyEngine::ParseInstruction(
                 GetOperandDestinationValueDisassasemblyPoint(
                     instruction, current_instruction_code_, operand_rva );
 
-            if ( IsFunction( dest_disasm.code, dest_disasm.rva ) ) {
+            if ( IsFunction( dest_disasm ) ) {
               AddDisassemblyPoint( dest_disasm );
             }
           }
@@ -823,13 +1106,13 @@ void PeDisassemblyEngine::ParseRDataSection() {
 
       const auto value_destination_ptr = pe_image_ptr + value_file_offset;
 
-      if ( IsFunction( value_destination_ptr, value_rva ) ) {
-        DisassemblyPoint disasm_point;
-        {
-          disasm_point.code = value_destination_ptr;
-          disasm_point.rva = value_rva;
-        }
+      DisassemblyPoint disasm_point;
+      {
+        disasm_point.code = value_destination_ptr;
+        disasm_point.rva = value_rva;
+      }
 
+      if ( IsFunction( disasm_point ) ) {
         AddDisassemblyPoint( disasm_point );
       }
     }

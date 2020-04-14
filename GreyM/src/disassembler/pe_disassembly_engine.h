@@ -65,11 +65,12 @@ class PeDisassemblyEngine {
 
   bool IsAddressWithinDataSectionOfCode( const uint64_t address );
 
-  bool IsFunction( const uint8_t* code, const uintptr_t rva );
-  bool IsFunctionX86( const uint8_t* code,
-                      const uintptr_t rva,
+  bool IsFunction( const DisassemblyPoint& disasm_point );
+  bool IsFunctionX86( const DisassemblyPoint& disasm_point,
                       int recursion_counter );
-  bool IsFunctionX64( const uint8_t* code, const uintptr_t rva );
+  bool IsFunctionX64( const DisassemblyPoint& disasm_point );
+  bool IsFunctionX64Prolog( const DisassemblyPoint& disasm_point );
+
   DisassemblyAction ParseInstruction( const cs_insn& instruction );
 
   bool IsVTableOrFunction( const cs_x86_op& operand1,
@@ -236,10 +237,6 @@ void PeDisassemblyEngine::BeginDisassembling(
   cs_insn* instruction = cs_malloc( disassembler_handle_ );
 
   while ( !finished ) {
-    if ( address_ == 0x26E5 ) {
-      int test = 0;
-    }
-
     // are we outside the buffer?
     if ( ( code_buf_size_ - current_code_index_ ) <= 0 ) {
       // try to continue from the saved disassembly points
