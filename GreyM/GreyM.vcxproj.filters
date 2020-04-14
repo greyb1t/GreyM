@@ -51,9 +51,6 @@
     <ClCompile Include="src\pe\section_headers.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\utils\safe_instruction.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\utils\file_log.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -98,9 +95,6 @@
     <ClInclude Include="src\pe\section_headers.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\utils\safe_instruction.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\utils\string_utils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -108,6 +102,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\utils\console_log.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\utils\defer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
