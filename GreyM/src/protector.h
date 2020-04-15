@@ -2,7 +2,8 @@
 
 #define VM_LOADER_SECTION_NAME ( ".dick" )
 #define VM_CODE_SECTION_NAME ( ".dick2" )
-#define TLSBABY_SECTION_NAME ( ".tlsbaby" )
+
+#define ENABLE_TLS_CALLBACKS TRUE
 
 class PortableExecutable;
 

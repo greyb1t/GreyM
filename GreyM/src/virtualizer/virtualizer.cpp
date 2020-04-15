@@ -261,7 +261,6 @@ VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
   }
 
   return vm_opcode;
-  //return VmOpcodes::NO_OPCODE;
 }
 
 bool IsVirtualizeable( const cs_insn& instruction, const VmOpcodes vm_opcode ) {
