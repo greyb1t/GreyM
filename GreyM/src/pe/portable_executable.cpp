@@ -62,6 +62,20 @@ PortableExecutable pe::Build( const std::vector<uint8_t>& header,
 
     // Update the section header in the pe header
     const auto current_section_header = IMAGE_FIRST_SECTION( nt_headers2 ) + i;
+
+    const auto end_ptr_dest_that_will_be_overwritten =
+        reinterpret_cast<uintptr_t>( current_section_header ) -
+        reinterpret_cast<uintptr_t>( pe_data.data() ) +
+        sizeof( IMAGE_SECTION_HEADER );
+
+    // If the section headers are being written outside of the header size
+    // That means it would overwrite data into the next section, usually .text section
+    if ( end_ptr_dest_that_will_be_overwritten >
+         nt_headers2->OptionalHeader.SizeOfHeaders ) {
+      throw std::runtime_error( "The section header " + section.GetName() +
+                                " does not fit inside of the header." );
+    }
+
     memcpy( current_section_header, &section.section_header_,
             sizeof( section.section_header_ ) );
 
