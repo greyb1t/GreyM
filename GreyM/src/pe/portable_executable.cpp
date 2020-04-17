@@ -35,8 +35,6 @@ PortableExecutable pe::Build( const std::vector<uint8_t>& header,
         // Ensure that we do not go out of bounds
         assert( ( i - 1 ) > 0 );
 
-        const auto& previous_section = sections_copy[ i - 1 ];
-
         const auto raw_data_offset = peutils::AlignUp(
             pe_data.size(), nt_headers.OptionalHeader.FileAlignment );
 
@@ -49,10 +47,19 @@ PortableExecutable pe::Build( const std::vector<uint8_t>& header,
         // Set the PointerToRawData appropriately
         section.section_header_.PointerToRawData = raw_data_offset;
 
-        section.section_header_.VirtualAddress = peutils::AlignUp(
-            previous_section.section_header_.VirtualAddress +
-                previous_section.section_header_.Misc.VirtualSize,
-            nt_headers.OptionalHeader.SectionAlignment );
+        // If it is the first section, there is no previous section to add on top
+        if ( i == 0 ) {
+          section.section_header_.VirtualAddress =
+              peutils::AlignUp( nt_headers.OptionalHeader.SizeOfHeaders,
+                                nt_headers.OptionalHeader.SectionAlignment );
+        } else {
+          const auto& previous_section = sections_copy[ i - 1 ];
+
+          section.section_header_.VirtualAddress = peutils::AlignUp(
+              previous_section.section_header_.VirtualAddress +
+                  previous_section.section_header_.Misc.VirtualSize,
+              nt_headers.OptionalHeader.SectionAlignment );
+        }
       }
     }
 
