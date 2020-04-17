@@ -24,14 +24,21 @@ uintptr_t Section::AppendCode( const std::vector<uint8_t>& code,
       peutils::AlignUp( data_.size(), file_alignment );
 
   // Is this alignment required? Probably not.
-  section_header_.Misc.VirtualSize =
-      peutils::AlignUp( data_.size(), section_alignment );
+  //section_header_.Misc.VirtualSize =
+  //    peutils::AlignUp( data_.size(), section_alignment );
+  section_header_.Misc.VirtualSize = data_.size();
 
   return current_offset;
 }
 
 std::string Section::GetName() const {
   return std::string( reinterpret_cast<const char*>( section_header_.Name ) );
+}
+
+void Section::SetName( const std::string& name ) {
+  assert( name.size() <= 8 );
+
+  memcpy( section_header_.Name, name.c_str(), sizeof( section_header_.Name ) );
 }
 
 const IMAGE_SECTION_HEADER& Section::GetSectionHeader() const {
@@ -59,10 +66,7 @@ Section section::CreateEmptySection( const std::string& name,
   // IMAGE_SCN_CNT_CODE | IMAGE_SCN_CNT_INITIALIZED_DATA |
   // IMAGE_SCN_CNT_UNINITIALIZED_DATA;
 
-  assert( name.size() <= 8 );
-
-  memcpy( section.section_header_.Name, name.c_str(),
-          sizeof( section.section_header_.Name ) );
+  section.SetName( name );
 
   return section;
 }
@@ -71,8 +75,7 @@ const bool section::IsRvaWithinSection(
     const IMAGE_SECTION_HEADER& section_header,
     const uintptr_t rva ) {
   if ( rva >= section_header.VirtualAddress &&
-       rva <
-           section_header.VirtualAddress + section_header.Misc.VirtualSize ) {
+       rva < section_header.VirtualAddress + section_header.Misc.VirtualSize ) {
     return true;
   }
 

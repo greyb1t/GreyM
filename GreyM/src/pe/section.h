@@ -40,6 +40,7 @@ class Section {
                         const uint32_t file_alignment );
 
   std::string GetName() const;
+  void SetName(const std::string& name);
 
   const IMAGE_SECTION_HEADER& GetSectionHeader() const;
 

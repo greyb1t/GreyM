@@ -51,7 +51,8 @@ struct FixupContext {
   // A list containing offset relative to vm section
   // that will be added to the relocation table in the PE
   std::vector<uintptr_t> vm_section_offsets_to_add_to_relocation_table;
-  std::vector<uintptr_t> tls_baby_section_offsets_to_add_to_relocation_table;
+  std::vector<uintptr_t>
+      virtualized_code_section_offsets_to_add_to_relocation_table;
 
   std::vector<Fixup> fixups;
 };
@@ -217,8 +218,9 @@ void AddTlsCallbacks( const PortableExecutable& original_pe,
   callback_addr_fixup.desc.size = sizeof( uintptr_t );
   context->fixup_context.fixups.push_back( callback_addr_fixup );
 
-  context->fixup_context.tls_baby_section_offsets_to_add_to_relocation_table
-      .push_back( fixup0 );
+  context->fixup_context
+      .virtualized_code_section_offsets_to_add_to_relocation_table.push_back(
+          fixup0 );
 
   IMAGE_TLS_DIRECTORY tls_directory;
   // The loader will copy the data between StartAddressOfRawData and
@@ -287,8 +289,9 @@ void AddTlsCallbacks( const PortableExecutable& original_pe,
       FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
   addr_of_index_fixup.desc.size = sizeof( uintptr_t );
   context->fixup_context.fixups.push_back( addr_of_index_fixup );
-  context->fixup_context.tls_baby_section_offsets_to_add_to_relocation_table
-      .push_back( addr_of_index_offset );
+  context->fixup_context
+      .virtualized_code_section_offsets_to_add_to_relocation_table.push_back(
+          addr_of_index_offset );
 
   const auto addr_of_callbacks_offset =
       tls_directory_data_offset +
@@ -302,8 +305,9 @@ void AddTlsCallbacks( const PortableExecutable& original_pe,
       FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
   addr_of_callbacks_fixup.desc.size = sizeof( uintptr_t );
   context->fixup_context.fixups.push_back( addr_of_callbacks_fixup );
-  context->fixup_context.tls_baby_section_offsets_to_add_to_relocation_table
-      .push_back( addr_of_callbacks_offset );
+  context->fixup_context
+      .virtualized_code_section_offsets_to_add_to_relocation_table.push_back(
+          addr_of_callbacks_offset );
 
   auto& tls_data_directory = original_pe_headers->OptionalHeader
                                  .DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
@@ -417,7 +421,8 @@ uintptr_t AppendRelocationBlock( const uintptr_t reloc_block_virtual_address,
 }
 
 // Adds relocations upon the relocation table that relocates
-// the image base in the loader shellcode
+// the image base in the loader shellcode, also add the offsets
+// of the relocation blocks to fixup the virtual address
 void AddRelocations(
     const FixupDescriptor& fixup_desc,
     const std::vector<uintptr_t>& section_offsets_to_add_to_relocation_table,
@@ -449,12 +454,6 @@ void AddRelocations(
         section_offsets_to_add_to_relocation_table ) {
     const auto delta_offset_from_reloc_block_va =
         vm_section_offset_to_relocate - reloc_block_virtual_address;
-
-    // We cannot add a relocation that has the offset 0, it was previously padding
-    // Please filter out the relocations to make sure they are not padding, we
-    // add the padding outselves and cannot use the one provided in the vector
-    // I THINK, NOT SURE THO
-    //assert( delta_offset_from_reloc_block_va );
 
     Relocation relocation;
 #ifdef _WIN64
@@ -497,9 +496,9 @@ void AddRelocations(
   }
 }
 
-void AddTlsBabySectionRelocations( IMAGE_NT_HEADERS* nt_headers,
-                                   Section* reloc_section,
-                                   FixupContext* fixup_context ) {
+void AddVirtualizedCodeSectionRelocations( IMAGE_NT_HEADERS* nt_headers,
+                                           Section* reloc_section,
+                                           FixupContext* fixup_context ) {
   FixupDescriptor fixup_desc;
   fixup_desc.offset_type = FixupOffsetType::RelocSection;
   fixup_desc.operation =
@@ -508,7 +507,8 @@ void AddTlsBabySectionRelocations( IMAGE_NT_HEADERS* nt_headers,
 
   AddRelocations(
       fixup_desc,
-      fixup_context->tls_baby_section_offsets_to_add_to_relocation_table,
+      fixup_context
+          ->virtualized_code_section_offsets_to_add_to_relocation_table,
       nt_headers, reloc_section, &fixup_context->fixups );
 }
 
@@ -795,31 +795,28 @@ PortableExecutable AssembleNewPe( const PortableExecutable& original_pe,
                     return section;
                   } );
 
-  auto& last_section = new_sections.back();
+  auto& reloc_section = new_sections.back();
 
   // Provided that the .reloc section is the last section, we can add
   // unlimited of relocations to it
-  assert( last_section.GetName() == ".reloc" );
+  assert( reloc_section.GetName() == ".reloc" );
 
   auto new_header_data = original_pe.CopyHeaderData();
 
   IMAGE_NT_HEADERS* new_header_nt_header =
       peutils::GetNtHeaders( new_header_data.data() );
 
-  AddVmSectionRelocations( new_header_nt_header, &last_section,
+  AddVmSectionRelocations( new_header_nt_header, &reloc_section,
                            &context->fixup_context );
 
 #if ENABLE_TLS_CALLBACKS
-  AddTlsBabySectionRelocations( new_header_nt_header, &last_section,
-                                &context->fixup_context );
+  AddVirtualizedCodeSectionRelocations( new_header_nt_header, &reloc_section,
+                                        &context->fixup_context );
 #endif
 
   // add the new sections to the new pe
   new_sections.push_back( context->vm_loader_section );
   new_sections.push_back( context->virtualized_code_section );
-#if ENABLE_TLS_CALLBACKS
-  //new_sections.push_back( context->tls_baby_section );
-#endif
 
   return pe::Build( new_header_data, new_sections );
 }
