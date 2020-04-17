@@ -751,6 +751,14 @@ void FixFinishedPe( PortableExecutable* pe,
   tls_data_directory.VirtualAddress +=
       new_pe_virtualized_code_section->VirtualAddress;
 #endif
+
+  auto section = IMAGE_FIRST_SECTION( new_nt_headers );
+
+  // After everything is done, rename the sections.
+  // We cannot do earlier because all code are dependant on the section names
+  for ( int i = 0; i < new_nt_headers->FileHeader.NumberOfSections; ++i ) {
+    strcpy( reinterpret_cast<char*>( section[ i ].Name ), "dicky" );
+  }
 }
 
 void AddInterpreterRelocationsToFixup( PortableExecutable& interpreter_pe,
