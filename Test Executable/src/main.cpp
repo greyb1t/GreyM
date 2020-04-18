@@ -238,6 +238,7 @@ class Neuz : public NeuzBase {
 
 Neuz g_neuz;
 
+/*
 __declspec( dllexport )
     IMAGE_NT_HEADERS* GetNtHeaders( uintptr_t region_base ) {
   auto dos_header = reinterpret_cast<IMAGE_DOS_HEADER*>( region_base );
@@ -247,8 +248,49 @@ __declspec( dllexport )
 
   return nt_headers;
 }
+*/
 
 int main() {
+  static std::vector<int> test_static_tls_data_temp_var = { 1337, 1338 };
+
+  // If the static tls initialization call above does not work properly, inform us about that shits
+  //
+  if ( test_static_tls_data_temp_var.size() == 0 ) {
+    MessageBox( 0,
+                TEXT( "Static tls data is not working properly, have you "
+                      "initialized it?" ),
+                TEXT( "ds" ), 0 );
+
+    return -1;
+  }
+
+  static std::vector<int> test_static_tls_data_temp_var2 = {
+    1337, 1338, 1337, 2338, 1337, 1638, 1337, 1338, 1337, 1338,
+    1337, 1138, 1337, 2338, 1337, 1638, 1337, 1738, 1337, 1338,
+    1337, 1138, 1337, 2338, 1337, 1638, 1337, 1738, 1337, 1338,
+    1337, 1338, 1337, 2338, 1337, 1638, 1337, 1338, 1337, 1338,
+  };
+
+  // If the static tls initialization call above does not work properly, inform us about that shits
+  //
+  if ( test_static_tls_data_temp_var2.size() == 0 ) {
+    MessageBox( 0,
+                TEXT( "Static tls data is not working properly, have you "
+                      "initialized it?" ),
+                TEXT( "ds" ), 0 );
+
+    return -1;
+  }
+
+  for ( auto lol : test_static_tls_data_temp_var ) {
+    std::cout << lol << std::endl;
+  }
+
+  for ( auto lol : test_static_tls_data_temp_var2 ) {
+    std::cout << lol << std::endl;
+  }
+
+  /*
   auto lol = GetModuleHandle( 0 );
   const auto nt_headers = GetNtHeaders( reinterpret_cast<uintptr_t>( lol ) );
 
@@ -260,6 +302,7 @@ int main() {
       .Size = 0;
   nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT ]
       .VirtualAddress = 0;
+  */
 
   MessageBoxA( 0, "Test123123", "dasdas", 0 );
 
