@@ -971,6 +971,22 @@ PortableExecutable AssembleNewPe( const PortableExecutable& original_pe,
 }
 
 PortableExecutable Protect( PortableExecutable original_pe ) {
+  const auto original_pe_nt_headers = *original_pe.GetNtHeaders();
+
+#ifndef _WIN64
+  if ( original_pe_nt_headers.OptionalHeader.Magic !=
+       IMAGE_NT_OPTIONAL_HDR32_MAGIC ) {
+    throw std::runtime_error(
+        "Please use the x64 version of GreyM to protect this executable." );
+  }
+#else
+  if ( original_pe_nt_headers.OptionalHeader.Magic !=
+       IMAGE_NT_OPTIONAL_HDR64_MAGIC ) {
+    throw std::runtime_error(
+        "Please use the x86 version of GreyM to protect this executable." );
+  }
+#endif
+
   PeDisassemblyEngine pe_disassembler( original_pe );
 
   // todo make the section sizes aligned with the remap
@@ -985,8 +1001,6 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   const auto interpreter_function_offset =
       GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
                                                   "VmInterpreter" );
-
-  const auto original_pe_nt_headers = *original_pe.GetNtHeaders();
 
   // When having a jump table in the interpreter, it has a pointer to th jump table
   // that contains the address to locations. Those locatino are being relocated by default.
