@@ -24,17 +24,16 @@ enum class FixupOperation {
   AddVirtualizedCodeSectionVirtualAddress,
 };
 
-// If the offset is relative to the specified section
-// E.g. VmLoaderSection means that the offset is relative to the vm loader section
-enum class FixupOffsetType {
+enum class OffsetRelativeTo {
   VmLoaderSection,
   TextSection,
   RelocSection,
   VirtualizedCodeSection,
+  Beginning,
 };
 
 struct FixupDescriptor {
-  FixupOffsetType offset_type;
+  OffsetRelativeTo offset_type;
   // The size of the value to update, 4 or 8 bytes?
   uint8_t size;
   FixupOperation operation;
@@ -197,261 +196,266 @@ std::vector<uintptr_t> CopyTlsCallbackList(
   return tls_callback_list;
 }
 
-std::vector<uint8_t> CopyTlsRawInitData(
-    const uint8_t* original_pe_data,
-    const IMAGE_TLS_DIRECTORY* original_tls_dir,
-    const SectionHeaders& original_sections,
-    const uintptr_t image_base ) {
-  std::vector<uint8_t> tls_init_raw_data;
-
-  if ( original_tls_dir->StartAddressOfRawData &&
-       original_tls_dir->EndAddressOfRawData ) {
-    const auto start_data_offset = original_sections.RvaToFileOffset(
-        original_tls_dir->StartAddressOfRawData - image_base );
-
-    const auto end_data_offset = original_sections.RvaToFileOffset(
-        original_tls_dir->EndAddressOfRawData - image_base );
-
-    tls_init_raw_data.insert(
-        tls_init_raw_data.end(), original_pe_data + start_data_offset,
-        original_pe_data + end_data_offset + original_tls_dir->SizeOfZeroFill );
-  }
-
-  return tls_init_raw_data;
-}
-
-void AddTlsCallbacks( const PortableExecutable& original_pe,
-                      const PortableExecutable& interpreter_pe,
+void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
+                      PortableExecutable* original_pe,
                       ProtectorContext* context ) {
-  const auto original_pe_data = original_pe.GetPeImagePtr();
-  const auto original_pe_headers = original_pe.GetNtHeaders();
-  const auto original_sections = original_pe.GetSectionHeaders();
+  // Previously I completely re-created the TLS directory in every case.
+  // Now I am only creating it if it did not exist previously.
+  // The reason being that calling LdrpHandleTlsData from a DLL
+  // caused it to fail with a error code of success.
 
-  const auto& original_data_tls_dir =
-      original_pe_headers->OptionalHeader
-          .DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
+  const auto original_pe_data = original_pe->GetPeImagePtr();
+  const auto original_pe_headers = original_pe->GetNtHeaders();
+  const auto original_sections = original_pe->GetSectionHeaders();
 
-  // TLS callback addresses
+  auto original_tls_data_dir = &original_pe_headers->OptionalHeader
+                                    .DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
+
   std::vector<uintptr_t> tls_callback_list;
 
-  // The data from StartAddressOfRawData & EndAddressOfRawData
-  std::vector<uint8_t> tls_init_raw_data;
+  const bool has_tls_directory = original_tls_data_dir->Size != 0;
 
-  uint32_t size_of_zero_fill = 0;
-  uint32_t characteristics = IMAGE_SCN_ALIGN_1BYTES;
-
-  // If the target PE has a tls directory
-  if ( original_data_tls_dir.Size != 0 ) {
-    assert( sizeof( IMAGE_TLS_DIRECTORY ) == original_data_tls_dir.Size );
+  if ( has_tls_directory ) {
+    // If the target PE has a tls directory, use that one
+    assert( sizeof( IMAGE_TLS_DIRECTORY ) == original_tls_data_dir->Size );
 
     const auto image_base = original_pe_headers->OptionalHeader.ImageBase;
 
     const auto tls_dir_file_offset = original_sections.RvaToFileOffset(
-        original_data_tls_dir.VirtualAddress );
+        original_tls_data_dir->VirtualAddress );
 
-    const auto original_tls_dir = reinterpret_cast<const IMAGE_TLS_DIRECTORY*>(
+    auto original_tls_dir = reinterpret_cast<IMAGE_TLS_DIRECTORY*>(
         original_pe_data + tls_dir_file_offset );
-
-    tls_init_raw_data = CopyTlsRawInitData( original_pe_data, original_tls_dir,
-                                            original_sections, image_base );
 
     tls_callback_list = CopyTlsCallbackList( original_pe_data, original_tls_dir,
                                              original_sections, image_base );
 
-    size_of_zero_fill = original_tls_dir->SizeOfZeroFill;
-    characteristics = original_tls_dir->Characteristics;
-  }
+    const auto interpreter_tls_callback_offset =
+        GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
+                                                    "TlsCallback" );
 
-  // The data that the AddressOfIndex will point to, this will be a bunch zeroed data
-  std::vector<uint8_t> index_data;
+    // Store the index of my TLS callback to be used later when adding a fixup for it
+    const auto my_tls_callback_index = tls_callback_list.size();
 
-  // Fill address of index with some zeroed data
-  index_data.insert( index_data.end(), sizeof( uintptr_t ) * 3, 0 );
+    // Add the address of my own TLS callback
+    tls_callback_list.push_back( DEFAULT_PE_BASE_ADDRESS +
+                                 interpreter_tls_callback_offset );
 
-  // Add the TLS index address data
-  const auto index_data_offset = context->virtualized_code_section.AppendCode(
-      index_data, original_pe_headers->OptionalHeader.SectionAlignment,
-      original_pe_headers->OptionalHeader.FileAlignment );
+    // Some padding in case I want to add more TLS callbacks later on
+    tls_callback_list.push_back( 0 );
+    tls_callback_list.push_back( 0 );
+    tls_callback_list.push_back( 0 );
+    tls_callback_list.push_back( 0 );
+    tls_callback_list.push_back( 0 );
 
-  const auto interpreter_tls_callback_offset =
-      GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
-                                                  "TlsCallback" );
+    uint8_t* tls_callback_list_ptr =
+        reinterpret_cast<uint8_t*>( tls_callback_list.data() );
 
-  // Store the index of my TLS callback to be used later when adding a fixup for it
-  const auto my_tls_callback_index = tls_callback_list.size();
+    // Convert the callback to a byte vector
+    std::vector<uint8_t> tls_callbacks_list_data;
+    tls_callbacks_list_data.assign(
+        &tls_callback_list_ptr[ 0 ],
+        &tls_callback_list_ptr[ tls_callback_list.size() *
+                                sizeof( uintptr_t ) ] );
 
-  // Add the address of my own TLS callback
-  tls_callback_list.push_back( DEFAULT_PE_BASE_ADDRESS +
-                               interpreter_tls_callback_offset );
-
-  // Some padding in case I want to add more TLS callbacks later on
-  tls_callback_list.push_back( 0 );
-  tls_callback_list.push_back( 0 );
-  tls_callback_list.push_back( 0 );
-  tls_callback_list.push_back( 0 );
-  tls_callback_list.push_back( 0 );
-
-  uint8_t* tls_callback_list_ptr =
-      reinterpret_cast<uint8_t*>( tls_callback_list.data() );
-
-  // Convert the callback to a byte vector
-  std::vector<uint8_t> tls_callbacks_list_data;
-  tls_callbacks_list_data.assign(
-      &tls_callback_list_ptr[ 0 ],
-      &tls_callback_list_ptr[ tls_callback_list.size() *
-                              sizeof( uintptr_t ) ] );
-
-  // Add the TLS callback list
-  const auto tls_callback_list_offset =
-      context->virtualized_code_section.AppendCode(
-          tls_callbacks_list_data,
-          original_pe_headers->OptionalHeader.SectionAlignment,
-          original_pe_headers->OptionalHeader.FileAlignment );
-
-  // Add each of the callbacks to the relocation table
-  for ( int i = 0; i < tls_callback_list.size(); ++i ) {
-    if ( tls_callback_list[ i ] != 0 ) {
-      context->fixup_context
-          .virtualized_code_section_offsets_to_add_to_relocation_table
-          .push_back( tls_callback_list_offset + i * sizeof( uintptr_t ) );
-    }
-  }
-
-  const auto my_tls_callback_offset =
-      tls_callback_list_offset +
-      ( my_tls_callback_index * sizeof( uintptr_t ) );
-
-  // Add my TLS callback to fixup
-  Fixup callback_addr_fixup;
-  callback_addr_fixup.offset = my_tls_callback_offset;
-  callback_addr_fixup.desc.offset_type =
-      FixupOffsetType::VirtualizedCodeSection;
-  callback_addr_fixup.desc.operation =
-      FixupOperation::AddVmLoaderSectionVirtualAddress;
-  callback_addr_fixup.desc.size = sizeof( uintptr_t );
-  context->fixup_context.fixups.push_back( callback_addr_fixup );
-
-  IMAGE_TLS_DIRECTORY tls_directory = { 0 };
-
-  if ( tls_init_raw_data.size() > 0 ) {
-    const auto tls_init_raw_data_offset =
+    // Add the TLS callback list
+    const auto tls_callback_list_offset =
         context->virtualized_code_section.AppendCode(
-            tls_init_raw_data,
+            tls_callbacks_list_data,
             original_pe_headers->OptionalHeader.SectionAlignment,
             original_pe_headers->OptionalHeader.FileAlignment );
 
-    tls_directory.StartAddressOfRawData =
-        DEFAULT_PE_BASE_ADDRESS + tls_init_raw_data_offset;
-
-    tls_directory.EndAddressOfRawData = tls_directory.StartAddressOfRawData +
-                                        tls_init_raw_data.size() -
-                                        size_of_zero_fill;
-
-    tls_directory.SizeOfZeroFill = size_of_zero_fill;
-  }
-
-  tls_directory.AddressOfIndex = DEFAULT_PE_BASE_ADDRESS + index_data_offset;
-
-  tls_directory.AddressOfCallBacks =
-      DEFAULT_PE_BASE_ADDRESS + tls_callback_list_offset;
-
-  tls_directory.Characteristics = characteristics;
-
-  uint8_t* tls_directory_ptr = reinterpret_cast<uint8_t*>( &tls_directory );
-
-  std::vector<uint8_t> tls_directory_data;
-  tls_directory_data.assign( &tls_directory_ptr[ 0 ],
-                             &tls_directory_ptr[ sizeof( tls_directory ) ] );
-
-  /*
-    prevent dumping
-    modify the protection of the tls data StartAddressOfRawData &
-    EndAddressOfRawData that the loader copies corrupt it somehow, or change
-    protection to prevent dumping
-    do it in the tls callback
-
-    -
-
-    Also: modify AddressOfIndex to 0 to make un-runnable
-  */
-
-  FixupDescriptor virtualized_code_desc;
-  virtualized_code_desc.offset_type = FixupOffsetType::VirtualizedCodeSection;
-  virtualized_code_desc.operation =
-      FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
-  virtualized_code_desc.size = sizeof( uintptr_t );
-
-  // Add the TLS data to last section before calculating the vm section
-  // virtual address
-  const auto tls_directory_data_offset =
-      context->virtualized_code_section.AppendCode(
-          tls_directory_data,
-          original_pe_headers->OptionalHeader.SectionAlignment,
-          original_pe_headers->OptionalHeader.FileAlignment );
-
-  // If we moved the raw init data, make sure to fixup the address to it
-  if ( tls_directory.StartAddressOfRawData &&
-       tls_directory.EndAddressOfRawData ) {
-    {
-      const auto start_address_of_rawdata_offset =
-          tls_directory_data_offset +
-          offsetof( IMAGE_TLS_DIRECTORY, StartAddressOfRawData );
-
-      Fixup start_address_of_rawdata_fixup;
-      start_address_of_rawdata_fixup.offset = start_address_of_rawdata_offset;
-      start_address_of_rawdata_fixup.desc = virtualized_code_desc;
-
-      context->fixup_context.fixups.push_back( start_address_of_rawdata_fixup );
-      context->fixup_context
-          .virtualized_code_section_offsets_to_add_to_relocation_table
-          .push_back( start_address_of_rawdata_offset );
+    // Add each of the callbacks to the relocation table
+    for ( int i = 0; i < tls_callback_list.size(); ++i ) {
+      if ( tls_callback_list[ i ] != 0 ) {
+        context->fixup_context
+            .virtualized_code_section_offsets_to_add_to_relocation_table
+            .push_back( tls_callback_list_offset + i * sizeof( uintptr_t ) );
+      }
     }
 
-    {
-      const auto end_address_of_rawdata_offset =
-          tls_directory_data_offset +
-          offsetof( IMAGE_TLS_DIRECTORY, EndAddressOfRawData );
+    const auto my_tls_callback_offset =
+        tls_callback_list_offset +
+        ( my_tls_callback_index * sizeof( uintptr_t ) );
 
-      Fixup end_address_of_rawdata_fixup;
-      end_address_of_rawdata_fixup.offset = end_address_of_rawdata_offset;
-      end_address_of_rawdata_fixup.desc = virtualized_code_desc;
+    // Add my TLS callback to fixup
+    Fixup callback_addr_fixup;
+    callback_addr_fixup.offset = my_tls_callback_offset;
+    callback_addr_fixup.desc.offset_type =
+        OffsetRelativeTo::VirtualizedCodeSection;
+    callback_addr_fixup.desc.operation =
+        FixupOperation::AddVmLoaderSectionVirtualAddress;
+    callback_addr_fixup.desc.size = sizeof( uintptr_t );
+    context->fixup_context.fixups.push_back( callback_addr_fixup );
 
-      context->fixup_context.fixups.push_back( end_address_of_rawdata_fixup );
-      context->fixup_context
-          .virtualized_code_section_offsets_to_add_to_relocation_table
-          .push_back( end_address_of_rawdata_offset );
+    original_tls_dir->AddressOfCallBacks =
+        DEFAULT_PE_BASE_ADDRESS + tls_callback_list_offset;
+
+    const auto addr_of_callbacks_offset =
+        tls_dir_file_offset +
+        offsetof( IMAGE_TLS_DIRECTORY, AddressOfCallBacks );
+
+    FixupDescriptor fixup_desc;
+    fixup_desc.offset_type = OffsetRelativeTo::Beginning;
+    fixup_desc.operation =
+        FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
+    fixup_desc.size = sizeof( uintptr_t );
+
+    Fixup addr_of_callbacks_fixup;
+    addr_of_callbacks_fixup.offset = addr_of_callbacks_offset;
+    addr_of_callbacks_fixup.desc = fixup_desc;
+    context->fixup_context.fixups.push_back( addr_of_callbacks_fixup );
+  } else {
+    // If the target PE does not have a TLS directory, create a new one
+
+    // The data that the AddressOfIndex will point to, this will be a bunch zeroed data
+    std::vector<uint8_t> index_data;
+
+    // Fill address of index with some zeroed data
+    index_data.insert( index_data.end(), sizeof( uintptr_t ), 0 );
+
+    // Add the TLS index address data
+    const auto index_data_offset = context->virtualized_code_section.AppendCode(
+        index_data, original_pe_headers->OptionalHeader.SectionAlignment,
+        original_pe_headers->OptionalHeader.FileAlignment );
+
+    //////////////////////////////////////////////////////////////////////////
+
+    const auto interpreter_tls_callback_offset =
+        GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
+                                                    "TlsCallback" );
+
+    // Store the index of my TLS callback to be used later when adding a fixup for it
+    const auto my_tls_callback_index = tls_callback_list.size();
+
+    assert( my_tls_callback_index == 0 );
+
+    // Add the address of my own TLS callback
+    tls_callback_list.push_back( DEFAULT_PE_BASE_ADDRESS +
+                                 interpreter_tls_callback_offset );
+
+    // Some padding in case I want to add more TLS callbacks later on
+    tls_callback_list.push_back( 0 );
+    tls_callback_list.push_back( 0 );
+    tls_callback_list.push_back( 0 );
+    tls_callback_list.push_back( 0 );
+    tls_callback_list.push_back( 0 );
+
+    uint8_t* tls_callback_list_ptr =
+        reinterpret_cast<uint8_t*>( tls_callback_list.data() );
+
+    // Convert the callback to a byte vector
+    std::vector<uint8_t> tls_callbacks_list_data;
+    tls_callbacks_list_data.assign(
+        &tls_callback_list_ptr[ 0 ],
+        &tls_callback_list_ptr[ tls_callback_list.size() *
+                                sizeof( uintptr_t ) ] );
+
+    // Add the TLS callback list
+    const auto tls_callback_list_offset =
+        context->virtualized_code_section.AppendCode(
+            tls_callbacks_list_data,
+            original_pe_headers->OptionalHeader.SectionAlignment,
+            original_pe_headers->OptionalHeader.FileAlignment );
+
+    // Add each of the callbacks to the relocation table
+    for ( int i = 0; i < tls_callback_list.size(); ++i ) {
+      if ( tls_callback_list[ i ] != 0 ) {
+        context->fixup_context
+            .virtualized_code_section_offsets_to_add_to_relocation_table
+            .push_back( tls_callback_list_offset + i * sizeof( uintptr_t ) );
+      }
     }
+
+    const auto my_tls_callback_offset =
+        tls_callback_list_offset +
+        ( my_tls_callback_index * sizeof( uintptr_t ) );
+
+    // Add my TLS callback to fixup
+    Fixup callback_addr_fixup;
+    callback_addr_fixup.offset = my_tls_callback_offset;
+    callback_addr_fixup.desc.offset_type =
+        OffsetRelativeTo::VirtualizedCodeSection;
+    callback_addr_fixup.desc.operation =
+        FixupOperation::AddVmLoaderSectionVirtualAddress;
+    callback_addr_fixup.desc.size = sizeof( uintptr_t );
+    context->fixup_context.fixups.push_back( callback_addr_fixup );
+
+    IMAGE_TLS_DIRECTORY tls_directory = { 0 };
+
+    tls_directory.AddressOfIndex = DEFAULT_PE_BASE_ADDRESS + index_data_offset;
+
+    tls_directory.AddressOfCallBacks =
+        DEFAULT_PE_BASE_ADDRESS + tls_callback_list_offset;
+
+    tls_directory.Characteristics = IMAGE_SCN_ALIGN_1BYTES;
+
+    uint8_t* tls_directory_ptr = reinterpret_cast<uint8_t*>( &tls_directory );
+
+    std::vector<uint8_t> tls_directory_data;
+    tls_directory_data.assign( &tls_directory_ptr[ 0 ],
+                               &tls_directory_ptr[ sizeof( tls_directory ) ] );
+
+    FixupDescriptor virtualized_code_desc;
+    virtualized_code_desc.offset_type =
+        OffsetRelativeTo::VirtualizedCodeSection;
+    virtualized_code_desc.operation =
+        FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
+    virtualized_code_desc.size = sizeof( uintptr_t );
+
+    // Add the TLS data to last section before calculating the vm section
+    // virtual address
+    const auto tls_directory_data_offset =
+        context->virtualized_code_section.AppendCode(
+            tls_directory_data,
+            original_pe_headers->OptionalHeader.SectionAlignment,
+            original_pe_headers->OptionalHeader.FileAlignment );
+
+    const auto addr_of_index_offset =
+        tls_directory_data_offset +
+        offsetof( IMAGE_TLS_DIRECTORY, AddressOfIndex );
+
+    Fixup addr_of_index_fixup;
+    addr_of_index_fixup.offset = addr_of_index_offset;
+    addr_of_index_fixup.desc = virtualized_code_desc;
+
+    context->fixup_context.fixups.push_back( addr_of_index_fixup );
+    context->fixup_context
+        .virtualized_code_section_offsets_to_add_to_relocation_table.push_back(
+            addr_of_index_offset );
+
+    const auto addr_of_callbacks_offset =
+        tls_directory_data_offset +
+        offsetof( IMAGE_TLS_DIRECTORY, AddressOfCallBacks );
+
+    Fixup addr_of_callbacks_fixup;
+    addr_of_callbacks_fixup.offset = addr_of_callbacks_offset;
+    addr_of_callbacks_fixup.desc = virtualized_code_desc;
+    context->fixup_context.fixups.push_back( addr_of_callbacks_fixup );
+    context->fixup_context
+        .virtualized_code_section_offsets_to_add_to_relocation_table.push_back(
+            addr_of_callbacks_offset );
+
+    original_tls_data_dir->Size = sizeof( IMAGE_TLS_DIRECTORY );
+    original_tls_data_dir->VirtualAddress = tls_directory_data_offset;
+
+    // Add the tls data directory VirtualAddress to the fixup
+    FixupDescriptor tls_dir_va_fixup_desc;
+    tls_dir_va_fixup_desc.offset_type = OffsetRelativeTo::Beginning;
+    tls_dir_va_fixup_desc.operation =
+        FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
+    tls_dir_va_fixup_desc.size = sizeof( uintptr_t );
+
+    Fixup tls_data_directory_virtual_address_fixup;
+    tls_data_directory_virtual_address_fixup.desc = tls_dir_va_fixup_desc;
+    tls_data_directory_virtual_address_fixup.offset =
+        reinterpret_cast<uintptr_t>( original_tls_data_dir ) -
+        reinterpret_cast<uintptr_t>( original_pe_data ) +
+        offsetof( IMAGE_DATA_DIRECTORY, VirtualAddress );
+
+    context->fixup_context.fixups.push_back(
+        tls_data_directory_virtual_address_fixup );
   }
-
-  const auto addr_of_index_offset =
-      tls_directory_data_offset +
-      offsetof( IMAGE_TLS_DIRECTORY, AddressOfIndex );
-
-  Fixup addr_of_index_fixup;
-  addr_of_index_fixup.offset = addr_of_index_offset;
-  addr_of_index_fixup.desc = virtualized_code_desc;
-
-  context->fixup_context.fixups.push_back( addr_of_index_fixup );
-  context->fixup_context
-      .virtualized_code_section_offsets_to_add_to_relocation_table.push_back(
-          addr_of_index_offset );
-
-  const auto addr_of_callbacks_offset =
-      tls_directory_data_offset +
-      offsetof( IMAGE_TLS_DIRECTORY, AddressOfCallBacks );
-
-  Fixup addr_of_callbacks_fixup;
-  addr_of_callbacks_fixup.offset = addr_of_callbacks_offset;
-  addr_of_callbacks_fixup.desc = virtualized_code_desc;
-  context->fixup_context.fixups.push_back( addr_of_callbacks_fixup );
-  context->fixup_context
-      .virtualized_code_section_offsets_to_add_to_relocation_table.push_back(
-          addr_of_callbacks_offset );
-
-  auto& tls_data_directory = original_pe_headers->OptionalHeader
-                                 .DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
-  tls_data_directory.Size = sizeof( IMAGE_TLS_DIRECTORY );
-  tls_data_directory.VirtualAddress = tls_directory_data_offset;
 }
 
 void RelocateInterpreterPe( PortableExecutable* interpreter_pe,
@@ -639,7 +643,7 @@ void AddVirtualizedCodeSectionRelocations( IMAGE_NT_HEADERS* nt_headers,
                                            Section* reloc_section,
                                            FixupContext* fixup_context ) {
   FixupDescriptor fixup_desc;
-  fixup_desc.offset_type = FixupOffsetType::RelocSection;
+  fixup_desc.offset_type = OffsetRelativeTo::RelocSection;
   fixup_desc.operation =
       FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
   fixup_desc.size = sizeof( uintptr_t );
@@ -655,7 +659,7 @@ void AddVmSectionRelocations( IMAGE_NT_HEADERS* nt_headers,
                               Section* reloc_section,
                               FixupContext* fixup_context ) {
   FixupDescriptor fixup_desc;
-  fixup_desc.offset_type = FixupOffsetType::RelocSection;
+  fixup_desc.offset_type = OffsetRelativeTo::RelocSection;
   fixup_desc.operation = FixupOperation::AddVmLoaderSectionVirtualAddress;
   fixup_desc.size = sizeof( uint32_t );
 
@@ -769,30 +773,42 @@ void FixFinishedPe( PortableExecutable* pe,
   const auto reloc_section = new_pe_section_headers.FromName( ".reloc" );
 
   for ( const auto fixup : fixups ) {
-    IMAGE_SECTION_HEADER const* section_header = nullptr;
+    uintptr_t file_offset = 0;
 
     switch ( fixup.desc.offset_type ) {
-      case FixupOffsetType::VmLoaderSection:
-        section_header = new_pe_vm_loader_section;
-        break;
-      case FixupOffsetType::TextSection:
-        section_header = &text_section;
-        break;
-      case FixupOffsetType::RelocSection:
-        section_header = reloc_section;
-        break;
-      case FixupOffsetType::VirtualizedCodeSection:
-        section_header = new_pe_virtualized_code_section;
-        break;
+      case OffsetRelativeTo::VmLoaderSection: {
+        const uintptr_t rva = section::SectionOffsetToRva(
+            *new_pe_vm_loader_section, fixup.offset );
+        file_offset = new_pe_section_headers.RvaToFileOffset( rva );
+      } break;
+
+      case OffsetRelativeTo::TextSection: {
+        const uintptr_t rva =
+            section::SectionOffsetToRva( text_section, fixup.offset );
+        file_offset = new_pe_section_headers.RvaToFileOffset( rva );
+      } break;
+
+      case OffsetRelativeTo::RelocSection: {
+        const uintptr_t rva =
+            section::SectionOffsetToRva( *reloc_section, fixup.offset );
+        file_offset = new_pe_section_headers.RvaToFileOffset( rva );
+      } break;
+
+      case OffsetRelativeTo::VirtualizedCodeSection: {
+        const uintptr_t rva = section::SectionOffsetToRva(
+            *new_pe_virtualized_code_section, fixup.offset );
+        file_offset = new_pe_section_headers.RvaToFileOffset( rva );
+      } break;
+
+      case OffsetRelativeTo::Beginning: {
+        file_offset = fixup.offset;
+      } break;
+
       default:
         assert( false && "bruh" );
         break;
     }
 
-    const uintptr_t rva =
-        section::SectionOffsetToRva( *section_header, fixup.offset );
-
-    const auto file_offset = new_pe_section_headers.RvaToFileOffset( rva );
     const auto image_ptr_to_update = pe->GetPeImagePtr() + file_offset;
 
     switch ( fixup.desc.size ) {
@@ -882,15 +898,6 @@ void FixFinishedPe( PortableExecutable* pe,
   nullify_pe_directory( pe, new_nt_headers, new_pe_section_headers,
                         IMAGE_DIRECTORY_ENTRY_DEBUG );
 
-#if ENABLE_TLS_CALLBACKS
-  // Temporary solution
-  auto& tls_data_directory =
-      new_nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
-  tls_data_directory.Size = sizeof( IMAGE_TLS_DIRECTORY );
-  tls_data_directory.VirtualAddress +=
-      new_pe_virtualized_code_section->VirtualAddress;
-#endif
-
   auto section = IMAGE_FIRST_SECTION( new_nt_headers );
 
 // After everything is done, rename the sections.
@@ -913,7 +920,7 @@ void AddInterpreterRelocationsToFixup( PortableExecutable& interpreter_pe,
                                                    *vm_fun_section_header );
 
   Fixup fixup;
-  fixup.desc.offset_type = FixupOffsetType::VmLoaderSection;
+  fixup.desc.offset_type = OffsetRelativeTo::VmLoaderSection;
   fixup.desc.operation = FixupOperation::AddVmLoaderSectionVirtualAddress;
   fixup.desc.size = sizeof( uint32_t );
 
@@ -1014,10 +1021,11 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   context.virtualized_code_section = section::CreateEmptySection(
       VM_CODE_SECTION_NAME, IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_DISCARDABLE |
-                                IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE );
+                                IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE
+      /*IMAGE_SCN_CNT_INITIALIZED_DATA */ );
 
 #if ENABLE_TLS_CALLBACKS
-  AddTlsCallbacks( original_pe, interpreter_pe, &context );
+  AddTlsCallbacks( interpreter_pe, &original_pe, &context );
 #endif
 
   const auto original_text_section_header =
@@ -1132,7 +1140,8 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
         Fixup jmp_back_addr_fixup;
         jmp_back_addr_fixup.offset =
             loader_shellcode_offset + orig_addr_value_offset;
-        jmp_back_addr_fixup.desc.offset_type = FixupOffsetType::VmLoaderSection;
+        jmp_back_addr_fixup.desc.offset_type =
+            OffsetRelativeTo::VmLoaderSection;
         jmp_back_addr_fixup.desc.operation =
             FixupOperation::SubtractVmLoaderSectionVirtualAddress;
         jmp_back_addr_fixup.desc.size = sizeof( uint32_t );
@@ -1145,7 +1154,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
         Fixup virtualized_code_addr_fixup;
         virtualized_code_addr_fixup.offset = vm_code_addr_offset;
         virtualized_code_addr_fixup.desc.offset_type =
-            FixupOffsetType::VmLoaderSection;
+            OffsetRelativeTo::VmLoaderSection;
         virtualized_code_addr_fixup.desc.operation =
             FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
         virtualized_code_addr_fixup.desc.size = sizeof( uint32_t );
@@ -1200,7 +1209,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
         Fixup jmp_to_vm_loader_fixup;
         jmp_to_vm_loader_fixup.offset = jmp_addr_offset;
-        jmp_to_vm_loader_fixup.desc.offset_type = FixupOffsetType::TextSection;
+        jmp_to_vm_loader_fixup.desc.offset_type = OffsetRelativeTo::TextSection;
         jmp_to_vm_loader_fixup.desc.operation =
             FixupOperation::AddVmLoaderSectionVirtualAddress;
         jmp_to_vm_loader_fixup.desc.size = sizeof( uint32_t );
@@ -1231,7 +1240,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
             original_text_section_header, address );
 
         // NOTE: THERE IS MORE WE NEED TO DO HERE I THINK
-        assert( false && "verify if the changes made here are correct" );
+        //assert( false && "verify if the changes made here are correct" );
 
         //const auto text_section_data =
         //    original_pe.GetPeImagePtr() +
