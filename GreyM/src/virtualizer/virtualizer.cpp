@@ -728,6 +728,27 @@ Shellcode GetX86LoaderShellcodeForVirtualizedCode(
     const cs_insn& instruction,
     const VmOpcodes vm_opcode,
     const uintptr_t image_base ) {
+  /*
+      It is very important that we do not access data outside the actual stack, if an interrupt 
+      occurs that the wrong moment, the data outside the stack can become corrupt.
+
+      NOTE: The following code does not modify the E/RFLAGS as the previous iteration did
+
+      Call:
+        We are pushing the destination address 2 times from the interpreter
+        
+        push eax                <-- Save eax because we use it
+        call 0                  <-- Push the current eip to the stack
+        pop eax                 <-- Read the pushed eip into eax
+        lea eax, [eax + 0xA]    <-- Same as add eax, 0xA
+        mov [esp + 0x8], eax    <-- Move return address into proper space on stack
+        pop eax               
+        ret                     <-- Jump to destination call
+
+      Jmp:
+        Simply RET immediately because we push the destination to the real stack from the interpreter
+  */
+
   Shellcode shellcode;
 
   shellcode.Reserve( 100 );
@@ -786,28 +807,50 @@ Shellcode GetX86LoaderShellcodeForVirtualizedCode(
   shellcode.AddByte( 0x9D );  // popfd
 
   if ( vm_opcode == VmOpcodes::CALL_IMMEDIATE ) {
-    // Before jmp back:
-    // add esp, 4
-    shellcode.AddBytes( { 0x83, 0xC4, 0x04 } );
+    // push eax
+    shellcode.AddByte( 0x50 );
 
-    // call dword ptr ss:[esp-0x4]
-    shellcode.AddBytes( { 0xFF, 0x54, 0x24, 0xFC } );
+    // call 0
+    shellcode.AddBytes( { 0xE8, 0x00, 0x00, 0x00, 0x00 } );
+
+    // pop eax
+    shellcode.AddByte( 0x58 );
+
+    // lea eax, ds:[eax+0xA]
+    shellcode.AddBytes( { 0x8D, 0x40, 0x0A } );
+
+    // mov dword ptr ss:[esp+0x8], eax
+    shellcode.AddBytes( { 0x89, 0x44, 0x24, 0x08 } );
+
+    // pop eax
+    shellcode.AddByte( 0x58 );
+
+    // ret
+    shellcode.AddByte( 0xC3 );
   } else if ( vm_opcode == VmOpcodes::CALL_MEMORY ) {
-    // Before jmp back:
-    // add esp, 4
-    shellcode.AddBytes( { 0x83, 0xC4, 0x04 } );
+    // push eax
+    shellcode.AddByte( 0x50 );
 
-    // call dword ptr ds:[esp-0x4]
-    shellcode.AddBytes( { 0x3E, 0xFF, 0x54, 0x24, 0xFC } );
+    // call 0
+    shellcode.AddBytes( { 0xE8, 0x00, 0x00, 0x00, 0x00 } );
+
+    // pop eax
+    shellcode.AddByte( 0x58 );
+
+    // lea eax, ds:[eax+0xA]
+    shellcode.AddBytes( { 0x8D, 0x40, 0x0A } );
+
+    // mov dword ptr ss:[esp+0x8], eax
+    shellcode.AddBytes( { 0x89, 0x44, 0x24, 0x08 } );
+
+    // pop eax
+    shellcode.AddByte( 0x58 );
+
+    // ret
+    shellcode.AddByte( 0xC3 );
   } else if ( vm_opcode == VmOpcodes::JMP_IMM ) {
-    // Remove the jmp addr from the stack
-    // Before jmp back:
-    // add esp, 4
-    shellcode.AddBytes( { 0x83, 0xC4, 0x04 } );
-
-    // Jump to the absolute target location
-    // jmp dword ptr ss:[esp-0x4]
-    shellcode.AddBytes( { 0xFF, 0x64, 0x24, 0xFC } );
+    // ret
+    shellcode.AddByte( 0xC3 );
   }
 
   shellcode.AddByte( 0xE9 );  // jmp
@@ -819,6 +862,40 @@ Shellcode GetX86LoaderShellcodeForVirtualizedCode(
 Shellcode GetX64LoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
                                                    const VmOpcodes vm_opcode,
                                                    const uint64_t image_base ) {
+  /*
+      It is very important that we do not access data outside the actual stack, if an interrupt 
+      occurs that the wrong moment, the data outside the stack can become corrupt.
+
+      NOTE: The following code does not modify the E/RFLAGS as the previous iteration did
+
+      Call:
+        We are pushing the destination address 2 times from the interpreter
+
+        OLD WAY (UNOPTIMIZED):
+
+        pushfq                    <-- Save RFLAGS because add ?, ? modifies them
+        push rax                  <-- Save RAX because we use it
+        call 0                    <-- Push RIP
+        add qword [rsp], 0x15     <-- Add 0x15 to the RIP
+        mov rax, qword [rsp]      <-- Save the return address in RAX
+        mov qword[rsp+0x20], rax  <-- Move the return address into the second pushed stack values
+        add rsp, 8                <-- Remove the RIP we pushed from call earlier
+        pop rax
+        popfq
+        ret                       <-- Call the real function
+
+        NEW WAY (OPTIMIZED):
+
+        push rax
+        lea rax, [rip + 0x7]      <-- Move the return address into rax
+        mov [rsp + 0x10], rax   <-- Move return address into proper space on stack
+        pop rax
+        ret
+
+      Jmp:
+        Simply RET immediately because we push the destination to the real stack from the interpreter
+  */
+
   Shellcode shellcode;
 
   shellcode.Reserve( 100 );
@@ -983,37 +1060,57 @@ Shellcode GetX64LoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
   shellcode.AddByte( 0x9D );  // popfd
 
   if ( vm_opcode == VmOpcodes::CALL_IMMEDIATE ) {
-    // Before jmp back:
-    // add rsp, 8
-    shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x08 } );
+    // push rax
+    shellcode.AddByte( 0x50 );
 
-    // call qword ptr ss:[rsp-0x8]
-    shellcode.AddBytes( { 0xFF, 0x54, 0x24, 0xF8 } );
+    // lea rax, [rip + 0x7]
+    shellcode.AddBytes( { 0x48, 0x8D, 0x05, 0x07, 0x00, 0x00, 0x00 } );
+
+    // mov qword ptr ss:[rsp+0x10], rax
+    shellcode.AddBytes( { 0x48, 0x89, 0x44, 0x24, 0x10 } );
+
+    // pop rax
+    shellcode.AddByte( 0x58 );
+
+    // ret
+    shellcode.AddByte( 0xC3 );
+
   } else if ( vm_opcode == VmOpcodes::CALL_MEMORY ) {
-    // Before jmp back:
-    // add rsp, 8
-    shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x08 } );
+    // push rax
+    shellcode.AddByte( 0x50 );
 
-    // Call the function that was pushed to the stack
-    // call qword ptr ds:[rsp-0x8]
-    shellcode.AddBytes( { 0x3E, 0xFF, 0x54, 0x24, 0xF8 } );
+    // lea rax, [rip + 0x7]
+    shellcode.AddBytes( { 0x48, 0x8D, 0x05, 0x07, 0x00, 0x00, 0x00 } );
+
+    // mov qword ptr ss:[rsp+0x10], rax
+    shellcode.AddBytes( { 0x48, 0x89, 0x44, 0x24, 0x10 } );
+
+    // pop rax
+    shellcode.AddByte( 0x58 );
+
+    // ret
+    shellcode.AddByte( 0xC3 );
   } else if ( vm_opcode == VmOpcodes::CALL_MEMORY_RIP_RELATIVE ) {
-    // Before jmp back:
-    // add rsp, 8
-    shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x08 } );
+    // push rax
+    shellcode.AddByte( 0x50 );
 
-    // Call the function that was pushed to the stack
-    // call qword ptr ds:[rsp-0x8]
-    shellcode.AddBytes( { 0x3E, 0xFF, 0x54, 0x24, 0xF8 } );
+    // lea rax, [rip + 0x7]
+    shellcode.AddBytes( { 0x48, 0x8D, 0x05, 0x07, 0x00, 0x00, 0x00 } );
+
+    // mov qword ptr ss:[rsp+0x10], rax
+    shellcode.AddBytes( { 0x48, 0x89, 0x44, 0x24, 0x10 } );
+
+    // pop rax
+    shellcode.AddByte( 0x58 );
+
+    // ret
+    shellcode.AddByte( 0xC3 );
   } else if ( vm_opcode == VmOpcodes::JMP_IMM ) {
-    // Remove the pushed value from the stack
-    // Before jmp back:
-    // add rsp, 8
-    shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x08 } );
+    // The interpreter simply pushes the jump destination
+    // to the stack and we simply ret to it
 
-    // Jump to the absolute target location
-    // jmp qword ptr ss:[rsp-0x8]
-    shellcode.AddBytes( { 0xFF, 0x64, 0x24, 0xF8 } );
+    // ret
+    shellcode.AddByte( 0xC3 );
   }
 
   shellcode.AddByte( 0xE9 );  // jmp

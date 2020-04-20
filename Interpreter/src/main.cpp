@@ -69,8 +69,11 @@ void PushValueToRealStack( VmContext* vm_context, uintptr_t value ) {
   // Copy the registers to the new location
   *new_registers = *vm_context->registers;
 
+  // Modify the vm_context->registers variable to the new stack address
+  vm_context->registers = new_registers;
+
   // Set the push value
-  *( uintptr_t* )current_register_last_value_address = value;
+  *reinterpret_cast<uintptr_t*>( current_register_last_value_address ) = value;
 
   // Modify esp appropriately in order to return to the correct esp so the
   // pushed arguments show on top of stack
@@ -423,11 +426,16 @@ __declspec( dllexport ) int32_t
       const auto absolute_addr_to_call = *reinterpret_cast<uintptr_t*>(
           destination_addr + image_base_address );
 
+      // Push a value that the loader prolog will use
+      PushValueToRealStack( vm_context, 0 );
+
       PushValueToRealStack( vm_context, absolute_addr_to_call );
     } break;
 
     case VmOpcodes::CALL_MEMORY: {
       // push the call address to the stack
+
+      // TODO: add size as with all other instructions
 
       auto absolute_call_target_addr_addr = ReadValue<uintptr_t>( &code );
 
@@ -439,6 +447,9 @@ __declspec( dllexport ) int32_t
 
       uintptr_t absolute_call_target_addr =
           *( uintptr_t* )absolute_call_target_addr_addr;
+
+      // Push a value that the loader prolog will use
+      PushValueToRealStack( vm_context, 0 );
 
       PushValueToRealStack( vm_context, absolute_call_target_addr );
 
@@ -454,6 +465,9 @@ __declspec( dllexport ) int32_t
       // add the image base
       // absolute_call_target_addr += DEFAULT_PE_BASE_ADDRESS;
       absolute_call_target_addr += image_base_address;
+
+      // Push a value that the loader prolog will use
+      PushValueToRealStack( vm_context, 0 );
 
       PushValueToRealStack( vm_context, absolute_call_target_addr );
 
