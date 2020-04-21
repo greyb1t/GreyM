@@ -454,50 +454,6 @@ Shellcode CreateVirtualizedShellcode(
       shellcode.AddValue<uintptr_t>( absolute_jmp_target_addr );
     } break;
 
-      /*
-      case VmOpcodes::SUB_REGISTER_IMMEDIATE: {
-        uint32_t reg_struct_offset = GetRegisterStructOffset( operands[ 0 ] );
-
-        // If the register is not supported, return empty
-        if ( reg_struct_offset == -1 )
-          return {};
-
-        // Push the register index to the virtualized code
-        shellcode.AddValue( reg_struct_offset );
-
-        shellcode.AddValue( static_cast<int32_t>( operands[ 1 ].imm ) );
-      } break;
-
-      case VmOpcodes::SUB_REGISTER_MEMORY_REG_OFFSET: {
-        uint32_t reg_dest_offset = GetRegisterStructOffset( operands[ 0 ] );
-
-        // If the register is not supported, return empty
-        if ( reg_dest_offset == -1 )
-          return {};
-
-        const auto& operand2 = operands[ 1 ];
-
-        const uint32_t reg_src_offset = GetRegisterStructOffsetMemory( operand2
-      );
-
-        // If the register is not supported, return empty
-        if ( reg_src_offset == -1 )
-          return {};
-
-        // TODO: X64 change to int64_t
-        const auto reg_src_disp = static_cast<int32_t>( operand2.mem.disp );
-
-        // Push the register offset to be changed to the virtualized code
-        shellcode.AddValue( reg_dest_offset );
-
-        // Push the reg offset
-        shellcode.AddValue( reg_src_offset );
-
-        // Push the reg disp offset
-        shellcode.AddValue( reg_src_disp );
-      } break;
-      */
-
     case VmOpcodes::MOV_REGISTER_MEMORY_IMMEDIATE: {
       assert( operands[ 0 ].type == x86_op_type::X86_OP_REG );
       assert( operands[ 1 ].type == x86_op_type::X86_OP_MEM );
