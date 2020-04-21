@@ -250,6 +250,43 @@ std::vector<Import> PortableExecutable::GetImports() const {
   return imports;
 }
 
+std::vector<uintptr_t> PortableExecutable::GetTlsCallbacklist() const {
+  std::vector<uintptr_t> tls_callback_list;
+
+  const auto& tls_data_directory =
+      nt_headers_->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
+
+  const bool has_tls_directory = tls_data_directory.Size != 0;
+
+  auto sections = GetSectionHeaders();
+
+  if ( has_tls_directory ) {
+    assert( sizeof( IMAGE_TLS_DIRECTORY ) == tls_data_directory.Size );
+
+    const auto image_base = nt_headers_->OptionalHeader.ImageBase;
+
+    const auto tls_dir_file_offset =
+        sections.RvaToFileOffset( tls_data_directory.VirtualAddress );
+
+    auto tls_directory = reinterpret_cast<const IMAGE_TLS_DIRECTORY*>(
+        pe_data_.data() + tls_dir_file_offset );
+
+    if ( tls_directory->AddressOfCallBacks ) {
+      auto callback_list_start_offset = sections.RvaToFileOffset(
+          tls_directory->AddressOfCallBacks - image_base );
+
+      auto callback_list_ptr = reinterpret_cast<const uintptr_t*>(
+          pe_data_.data() + callback_list_start_offset );
+
+      for ( ; *callback_list_ptr; callback_list_ptr++ ) {
+        tls_callback_list.push_back( *callback_list_ptr );
+      }
+    }
+  }
+
+  return tls_callback_list;
+}
+
 std::vector<Export> PortableExecutable::GetExports() const {
   std::vector<Export> exports;
 

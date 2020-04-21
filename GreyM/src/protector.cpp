@@ -165,37 +165,6 @@ uint32_t GetExportedFunctionOffsetRelativeToSection(
   return interpreter_offset_relative_to_section;
 }
 
-std::vector<uintptr_t> CopyTlsCallbackList(
-    const uint8_t* original_pe_data,
-    const IMAGE_TLS_DIRECTORY* original_tls_dir,
-    const SectionHeaders& original_sections,
-    const uintptr_t image_base ) {
-  std::vector<uintptr_t> tls_callback_list;
-
-  if ( original_tls_dir->AddressOfCallBacks ) {
-    const auto tls_callback_list_start_offset =
-        original_sections.RvaToFileOffset(
-            original_tls_dir->AddressOfCallBacks - image_base );
-
-    // Read the existing TLS callbacks and add them to the new vector
-    for ( int i = 0;; ++i ) {
-      const auto addr_list_offset = i * sizeof( uintptr_t );
-      const auto callback_addr = *reinterpret_cast<const uintptr_t*>(
-          original_pe_data + tls_callback_list_start_offset +
-          addr_list_offset );
-      const bool reached_end = callback_addr == 0;
-
-      if ( !reached_end ) {
-        tls_callback_list.push_back( callback_addr );
-      } else {
-        break;
-      }
-    }
-  }
-
-  return tls_callback_list;
-}
-
 void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
                       PortableExecutable* original_pe,
                       ProtectorContext* context ) {
@@ -219,20 +188,17 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
     // If the target PE has a tls directory, use that one
     assert( sizeof( IMAGE_TLS_DIRECTORY ) == original_tls_data_dir->Size );
 
-    const auto image_base = original_pe_headers->OptionalHeader.ImageBase;
-
     const auto tls_dir_file_offset = original_sections.RvaToFileOffset(
         original_tls_data_dir->VirtualAddress );
 
     auto original_tls_dir = reinterpret_cast<IMAGE_TLS_DIRECTORY*>(
         original_pe_data + tls_dir_file_offset );
 
-    tls_callback_list = CopyTlsCallbackList( original_pe_data, original_tls_dir,
-                                             original_sections, image_base );
+    tls_callback_list = original_pe->GetTlsCallbacklist();
 
     const auto interpreter_tls_callback_offset =
         GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
-                                                    "TlsCallback" );
+                                                    "FirstTlsCallback" );
 
     // Store the index of my TLS callback to be used later when adding a fixup for it
     const auto my_tls_callback_index = tls_callback_list.size();

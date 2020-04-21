@@ -62,6 +62,8 @@ class PortableExecutable {
 
   std::vector<Import> GetImports() const;
 
+  std::vector<uintptr_t> GetTlsCallbacklist() const;
+
   // I previously used a std::function for the callback, but using a templated
   // function supports capturing variable in the lambda as well and has
   // extremely good performance compared to std::function
