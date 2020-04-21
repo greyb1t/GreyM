@@ -1119,6 +1119,28 @@ void PeDisassemblyEngine::ParseRDataSection() {
   }
 }
 
+void PeDisassemblyEngine::ParseTlsCallbacks() {
+  const auto nt_headers = pe_.GetNtHeaders();
+  const auto image_base = nt_headers->OptionalHeader.ImageBase;
+
+  const auto sections = pe_.GetSectionHeaders();
+
+  const auto tls_callback_list = pe_.GetTlsCallbacklist();
+
+  for ( const auto callback : tls_callback_list ) {
+    DisassemblyPoint disasm_point;
+
+    const auto rva = callback - image_base;
+
+    const auto callback_code_offset = sections.RvaToFileOffset( rva );
+
+    disasm_point.rva = rva;
+    disasm_point.code = pe_.GetPeImagePtr() + callback_code_offset;
+
+    AddDisassemblyPoint( disasm_point );
+  }
+}
+
 void PeDisassemblyEngine::AddDisassemblyPoint(
     const DisassemblyPoint& disasm_point ) {
   const bool exists = disassembly_points_cache_.find( disasm_point.rva ) !=

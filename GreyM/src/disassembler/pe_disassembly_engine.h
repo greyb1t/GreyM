@@ -99,6 +99,9 @@ class PeDisassemblyEngine {
   // Finds all the virtual functions in the rdata section
   void ParseRDataSection();
 
+  // Adds each of the TLS callback to the disassembly points
+  void ParseTlsCallbacks();
+
   void AddDisassemblyPoint( const DisassemblyPoint& disasm_point );
 
  private:
@@ -152,6 +155,8 @@ void PeDisassemblyEngine::DisassembleFromEntrypoint(
   SetDisassemblyPoint( disasm_point, pe_text_section_header_->SizeOfRawData );
 
   ParseRDataSection();
+
+  ParseTlsCallbacks();
 
   BeginDisassembling( disassembly_callback, invalid_instruction_callback );
 }
