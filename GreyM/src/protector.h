@@ -3,8 +3,6 @@
 #define VM_LOADER_SECTION_NAME ( ".dick" )
 #define VM_CODE_SECTION_NAME ( ".dick2" )
 
-#define ENABLE_TLS_CALLBACKS TRUE
-
 class PortableExecutable;
 
 namespace protector {

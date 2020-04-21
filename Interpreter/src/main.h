@@ -4,6 +4,8 @@
 #define VM_FUNCTIONS_SECTION_NAME "vmfun"
 #define VM_INTERPRETER_STACK_ALLOCATION_SIZE_BYTES 200
 
+#define ENABLE_TLS_CALLBACKS TRUE
+
 #define DLL 0
 
 // TODO: Read the default pe base address from the header instead of hard-coding

@@ -207,6 +207,17 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
     tls_callback_list.push_back( DEFAULT_PE_BASE_ADDRESS +
                                  interpreter_tls_callback_offset );
 
+    const auto interpreter_second_tls_callback_offset =
+        GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
+                                                    "SecondTlsCallback" );
+
+    // Store the index of my TLS callback to be used later when adding a fixup for it
+    const auto my_second_tls_callback_index = tls_callback_list.size();
+
+    // Add the address of my own TLS callback
+    tls_callback_list.push_back( ( /*DEFAULT_PE_BASE_ADDRESS + */
+                                   interpreter_second_tls_callback_offset ) );
+
     // Some padding in case I want to add more TLS callbacks later on
     tls_callback_list.push_back( 0 );
     tls_callback_list.push_back( 0 );
@@ -240,19 +251,39 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
       }
     }
 
-    const auto my_tls_callback_offset =
-        tls_callback_list_offset +
-        ( my_tls_callback_index * sizeof( uintptr_t ) );
+    // Add the my first tls callback to the fixup
+    {
+      const auto my_tls_callback_offset =
+          tls_callback_list_offset +
+          ( my_tls_callback_index * sizeof( uintptr_t ) );
 
-    // Add my TLS callback to fixup
-    Fixup callback_addr_fixup;
-    callback_addr_fixup.offset = my_tls_callback_offset;
-    callback_addr_fixup.desc.offset_type =
-        OffsetRelativeTo::VirtualizedCodeSection;
-    callback_addr_fixup.desc.operation =
-        FixupOperation::AddVmLoaderSectionVirtualAddress;
-    callback_addr_fixup.desc.size = sizeof( uintptr_t );
-    context->fixup_context.fixups.push_back( callback_addr_fixup );
+      // Add my TLS callback to fixup
+      Fixup callback_addr_fixup;
+      callback_addr_fixup.offset = my_tls_callback_offset;
+      callback_addr_fixup.desc.offset_type =
+          OffsetRelativeTo::VirtualizedCodeSection;
+      callback_addr_fixup.desc.operation =
+          FixupOperation::AddVmLoaderSectionVirtualAddress;
+      callback_addr_fixup.desc.size = sizeof( uintptr_t );
+      context->fixup_context.fixups.push_back( callback_addr_fixup );
+    }
+
+    // Add the my second tls callback to the fixup
+    {
+      const auto my_tls_callback_offset =
+          tls_callback_list_offset +
+          ( my_second_tls_callback_index * sizeof( uintptr_t ) );
+
+      // Add my TLS callback to fixup
+      Fixup callback_addr_fixup;
+      callback_addr_fixup.offset = my_tls_callback_offset;
+      callback_addr_fixup.desc.offset_type =
+          OffsetRelativeTo::VirtualizedCodeSection;
+      callback_addr_fixup.desc.operation =
+          FixupOperation::AddVmLoaderSectionVirtualAddress;
+      callback_addr_fixup.desc.size = sizeof( uintptr_t );
+      context->fixup_context.fixups.push_back( callback_addr_fixup );
+    }
 
     original_tls_dir->AddressOfCallBacks =
         DEFAULT_PE_BASE_ADDRESS + tls_callback_list_offset;
@@ -289,7 +320,7 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
 
     const auto interpreter_tls_callback_offset =
         GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
-                                                    "TlsCallback" );
+                                                    "FirstTlsCallback" );
 
     // Store the index of my TLS callback to be used later when adding a fixup for it
     const auto my_tls_callback_index = tls_callback_list.size();
@@ -299,6 +330,19 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
     // Add the address of my own TLS callback
     tls_callback_list.push_back( DEFAULT_PE_BASE_ADDRESS +
                                  interpreter_tls_callback_offset );
+
+    const auto interpreter_second_tls_callback_offset =
+        GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
+                                                    "SecondTlsCallback" );
+
+    // Store the index of my TLS callback to be used later when adding a fixup for it
+    const auto my_second_tls_callback_index = tls_callback_list.size();
+
+    assert( my_second_tls_callback_index == 1 );
+
+    // Add the address of my own TLS callback
+    tls_callback_list.push_back( /*DEFAULT_PE_BASE_ADDRESS +*/
+                                 interpreter_second_tls_callback_offset );
 
     // Some padding in case I want to add more TLS callbacks later on
     tls_callback_list.push_back( 0 );
@@ -333,19 +377,39 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
       }
     }
 
-    const auto my_tls_callback_offset =
-        tls_callback_list_offset +
-        ( my_tls_callback_index * sizeof( uintptr_t ) );
+    // Add my first TLS callback to the fixup
+    {
+      const auto my_tls_callback_offset =
+          tls_callback_list_offset +
+          ( my_tls_callback_index * sizeof( uintptr_t ) );
 
-    // Add my TLS callback to fixup
-    Fixup callback_addr_fixup;
-    callback_addr_fixup.offset = my_tls_callback_offset;
-    callback_addr_fixup.desc.offset_type =
-        OffsetRelativeTo::VirtualizedCodeSection;
-    callback_addr_fixup.desc.operation =
-        FixupOperation::AddVmLoaderSectionVirtualAddress;
-    callback_addr_fixup.desc.size = sizeof( uintptr_t );
-    context->fixup_context.fixups.push_back( callback_addr_fixup );
+      // Add my TLS callback to fixup
+      Fixup callback_addr_fixup;
+      callback_addr_fixup.offset = my_tls_callback_offset;
+      callback_addr_fixup.desc.offset_type =
+          OffsetRelativeTo::VirtualizedCodeSection;
+      callback_addr_fixup.desc.operation =
+          FixupOperation::AddVmLoaderSectionVirtualAddress;
+      callback_addr_fixup.desc.size = sizeof( uintptr_t );
+      context->fixup_context.fixups.push_back( callback_addr_fixup );
+    }
+
+    // Add my second TLS callback to the fixup
+    {
+      const auto my_tls_callback_offset =
+          tls_callback_list_offset +
+          ( my_second_tls_callback_index * sizeof( uintptr_t ) );
+
+      // Add my TLS callback to fixup
+      Fixup callback_addr_fixup;
+      callback_addr_fixup.offset = my_tls_callback_offset;
+      callback_addr_fixup.desc.offset_type =
+          OffsetRelativeTo::VirtualizedCodeSection;
+      callback_addr_fixup.desc.operation =
+          FixupOperation::AddVmLoaderSectionVirtualAddress;
+      callback_addr_fixup.desc.size = sizeof( uintptr_t );
+      context->fixup_context.fixups.push_back( callback_addr_fixup );
+    }
 
     IMAGE_TLS_DIRECTORY tls_directory = { 0 };
 
@@ -985,6 +1049,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   context.vm_loader_section = CreateVmSection( interpreter_pe );
 
+  // Add write access because we edit the callback list in the FirstTlsCallback()
   context.virtualized_code_section = section::CreateEmptySection(
       VM_CODE_SECTION_NAME, IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_DISCARDABLE |
                                 IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE

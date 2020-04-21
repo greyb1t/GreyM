@@ -37,12 +37,70 @@ __declspec( dllexport ) int WINAPI EntryPoint( HINSTANCE instance,
 #endif
 */
 
+IMAGE_NT_HEADERS* GetNtHeaders( const PVOID base ) {
+  auto dos_header = reinterpret_cast<IMAGE_DOS_HEADER*>( base );
+  auto nt_header = reinterpret_cast<IMAGE_NT_HEADERS*>(
+      reinterpret_cast<uint8_t*>( dos_header ) + dos_header->e_lfanew );
+  return nt_header;
+}
+
+void FixNextCorruptedTlsCallback( PVOID dll_base ) {
+  const auto base_addr = reinterpret_cast<uintptr_t>( dll_base );
+
+  auto nt_headers = GetNtHeaders( dll_base );
+
+  auto tls_data_directory =
+      &nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
+
+  if ( tls_data_directory->Size != 0 ) {
+    auto tls_directory = reinterpret_cast<IMAGE_TLS_DIRECTORY*>(
+        base_addr + tls_data_directory->VirtualAddress );
+    // In the function AddTlsCallbacks() I always add my TLS callbacks as the two last ones
+    // The last TLS callback is the one we will "decrypt"
+    auto callback_list =
+        reinterpret_cast<uintptr_t*>( tls_directory->AddressOfCallBacks );
+
+    uintptr_t* last_tls_callback = 0;
+
+    for ( ; *callback_list; callback_list++ ) {
+      last_tls_callback = callback_list;
+    }
+
+    // TODO: Consider using a better solution to fix the corrupted tls callback
+    // E.g. XOR the value to decrypt it
+    *last_tls_callback += DEFAULT_PE_BASE_ADDRESS;
+  }
+}
+
 __declspec( dllexport ) void NTAPI
-    TlsCallback( PVOID DllHandle, DWORD Reason, PVOID Reserved ) {
+    FirstTlsCallback( PVOID dll_base, DWORD reason, PVOID reserved ) {
+  /*
+    Remove the TLS callback immediately after they are called, in themselves
+    That means, if we e.g. fix imports in the TLS callbacks, are they are removed once someone dumps them, means invalid PE?
+
+    1. Check the integrity of the image
+    2. 
+  */
+  switch ( reason ) {
+    case DLL_PROCESS_ATTACH: {
+#if ENABLE_TLS_CALLBACKS
+      FixNextCorruptedTlsCallback( dll_base );
+#endif
+    } break;
+    default:
+      break;
+  }
   // TODO: Fix the imports in this tls callback, OR, add another dynamic TLS callback and fix the imports in that.
   // Meaning we have to let the protector ruin the imports
 
   // Read here to ruin the imports: https://github.com/namreeb/dumpwow/blob/master/dll/dumper.cpp
+
+  // TODO: Consider removing the calling tls callback from the callback list when it has JUST entered the call
+  // The FIRST thing we do in the TLS callback, is remove itself from the TLS callback list
+
+  // 1. Decrypt all strings
+  // 2. Fix all imports
+  // 3. Remap
 
   // Flow:
   // 1. Decrypt the sections, extra layer to waste time
@@ -50,6 +108,15 @@ __declspec( dllexport ) void NTAPI
   // 3. Check integrity that was written in a data section by the protector
   // 4. Try to modify the remapped memory to ensure that it was properly remapped and no disgusting things occur.
   //    Ensure that when we try to modify it, do not use an API call that can be hooked
+}
+
+__declspec( dllexport ) void NTAPI
+    SecondTlsCallback( PVOID dll_base, DWORD reason, PVOID reserved ) {
+  // TODO: Add a dynamic TLS callback here, ensure that when do so, we never directly
+  // reference the new TLS callback by address to ensure someone cannot
+  // simply find it by decompiling the code in IDA
+
+  auto nt_headers = GetNtHeaders( dll_base );
 }
 
 void PushValueToRealStack( VmContext* vm_context, uintptr_t value ) {
