@@ -35,6 +35,30 @@ PeDisassemblyEngine::PeDisassemblyEngine( const PortableExecutable pe )
   }
 }
 
+void PeDisassemblyEngine::DisassembleFromEntrypoint(
+    const tDisassemblingCallback& disassembly_callback,
+    const tDisassemblingInvalidInstructionCallback&
+        invalid_instruction_callback,
+    void* data ) {
+  const auto entrypoint_rva =
+      pe_.GetNtHeaders()->OptionalHeader.AddressOfEntryPoint;
+  const auto entrypoint_offset =
+      pe_section_headers_.RvaToFileOffset( entrypoint_rva );
+
+  DisassemblyPoint disasm_point;
+  disasm_point.code = pe_.GetPeImagePtr() + entrypoint_offset;
+  disasm_point.rva = entrypoint_rva;
+
+  SetDisassemblyPoint( disasm_point, pe_text_section_header_->SizeOfRawData );
+
+  ParseRDataSection();
+
+  ParseTlsCallbacks();
+
+  BeginDisassembling( disassembly_callback, invalid_instruction_callback,
+                      data );
+}
+
 void PeDisassemblyEngine::SetDisassemblyPoint(
     const DisassemblyPoint& disasm_point,
     const size_t disasm_buffer_size ) {
@@ -1125,7 +1149,7 @@ void PeDisassemblyEngine::ParseTlsCallbacks() {
 
   const auto sections = pe_.GetSectionHeaders();
 
-  const auto tls_callback_list = pe_.GetTlsCallbacklist();
+  auto tls_callback_list = pe_.GetTlsCallbacklist();
 
   for ( const auto callback : tls_callback_list ) {
     DisassemblyPoint disasm_point;
@@ -1150,4 +1174,156 @@ void PeDisassemblyEngine::AddDisassemblyPoint(
     disassembly_points_.push_back( disasm_point );
     disassembly_points_cache_.insert( disasm_point.rva );
   }
+}
+
+void PeDisassemblyEngine::BeginDisassembling(
+    const tDisassemblingCallback& disassembly_callback,
+    const tDisassemblingInvalidInstructionCallback&
+        invalid_instruction_callback,
+    void* data ) {
+  bool finished = false;
+
+  // allocate memory for one instruction and use this memory for all instruction
+  // to increase performance
+  cs_insn* instruction = cs_malloc( disassembler_handle_ );
+
+  while ( !finished ) {
+    // are we outside the buffer?
+    if ( ( code_buf_size_ - current_code_index_ ) <= 0 ) {
+      // try to continue from the saved disassembly points
+      if ( !ContinueFromDisassemblyPoints() ) {
+        finished = true;
+        break;
+      }
+    }
+
+    // save the code pointer because capstone modifies it to next instruction
+    // when disassembling an instruction
+    current_instruction_code_ = code_;
+
+    // has the instruction already been disassembled?
+    if ( ( disassembled_instructions_.find( static_cast<uintptr_t>(
+               address_ ) ) != disassembled_instructions_.end() ) ||
+         IsAddressWithinDataSectionOfCode( address_ ) ) {
+      // continue disassembling instructions from the saved redirection
+      // instructions
+      if ( !ContinueFromDisassemblyPoints() ) {
+        finished = true;
+        break;
+      }
+
+      continue;
+    }
+
+    if ( !cs_disasm_iter( disassembler_handle_, &code_, &code_buf_size_,
+                          &address_, instruction ) ) {
+      // If the instruction is invalid, just continue like normal but continue
+      // on an instruction from the disassembly points
+      // At the end of the disassembling, we fix the invalid instructions
+
+      if ( !ContinueFromDisassemblyPoints() ) {
+        finished = true;
+        break;
+      }
+
+      continue;
+    }
+
+    current_code_index_ += instruction->size;
+
+    // try virtualize it
+    // parse it to further see if should continue disassembly
+    disassembly_callback( *instruction, current_instruction_code_, data );
+
+    const auto next_disasm_action = ParseInstruction( *instruction );
+
+    // returns the next instruction to disassemble
+    switch ( next_disasm_action ) {
+      case DisassemblyAction::NextInstruction: {
+        // we do not need to change the code or address values because capstone
+        // does it for us
+      } break;
+
+      case DisassemblyAction::NextDisassemblyPoint: {
+        if ( !ContinueFromDisassemblyPoints() ) {
+          finished = true;
+          break;
+        }
+      } break;
+      default:
+        assert( false );
+        break;
+    }
+
+    SmallInstructionData dick( instruction->size, current_instruction_code_ );
+
+    disassembled_instructions_.insert( std::make_pair(
+        static_cast<uintptr_t>( instruction->address ), dick ) );
+  }
+
+  // when finished
+  // go through the each disassembled_instructions_ entry and check if the
+  // address is inside the ranges of data
+  // if true, replace the (jmp) bytes with the original_pe bytes to remove the
+  // virtualization
+
+  std::unordered_set<uint64_t> already_invalidated_instruction_addresses_;
+
+  // we do this because switch tables can be read in wrong order, meaning
+  // reaching and disassembling the data part of jump table before know it is
+  // actually a jump table
+  for ( const auto& ins : disassembled_instructions_ ) {
+    const bool already_invalidated =
+        already_invalidated_instruction_addresses_.find( ins.first ) !=
+        already_invalidated_instruction_addresses_.end();
+
+    // Go through each disassembled instruction and check if it is within a data
+    // section of the code, such as a jump table
+    if ( IsAddressWithinDataSectionOfCode( ins.first ) &&
+         !already_invalidated ) {
+      invalid_instruction_callback( ins.first, ins.second, data );
+      already_invalidated_instruction_addresses_.insert( ins.first );
+
+      DisassemblyPoint disasm_point;
+      disasm_point.code = ins.second.code_ptr_;
+      disasm_point.rva = ins.first;
+
+      SetDisassemblyPoint( disasm_point,
+                           pe_text_section_header_->SizeOfRawData );
+
+      const auto InvalidInstructionCallback =
+          [&]( const uint64_t address, const SmallInstructionData ins_data ) {
+            // dont know what to do here
+            assert( false );
+          };
+
+      const auto EachInstructionCallback = [&]( const cs_insn& instruction,
+                                                const uint8_t* code ) {
+        const bool already_invalidated2 =
+            already_invalidated_instruction_addresses_.find( ins.first ) !=
+            already_invalidated_instruction_addresses_.end();
+
+        // if instruction has not already been invalidated
+        if ( !already_invalidated2 ) {
+          // Call original invalid instruction callback
+          invalid_instruction_callback( ins.first, ins.second, data );
+        }
+      };
+
+      // Clear the cache so the disassembler acts like its the first time
+      // disassembling the code
+      disassembly_points_cache_.clear();
+
+      // Disassemble from the point of the invalid instruction to identify what
+      // more wrong instructions the disassembler thought was real code
+      // Then for all the so called "valid" instruction, turn invalid by calling
+      // the original invalid callback for original caller
+      BeginDisassemblingMinimal( EachInstructionCallback,
+                                 InvalidInstructionCallback );
+
+      already_invalidated_instruction_addresses_.insert( ins.first );
+    }
+  }
+
+  cs_free( instruction, 1 );
 }

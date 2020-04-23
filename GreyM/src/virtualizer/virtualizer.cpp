@@ -265,8 +265,9 @@ VmOpcodes GetVmOpcode( const cs_insn& instruction ) {
 
 bool IsVirtualizeable( const cs_insn& instruction, const VmOpcodes vm_opcode ) {
   // the instruction has to be bigger than a jmp
-  if ( instruction.size < 5 )
+  if ( instruction.size < 5 ) {
     return false;
+  }
 
   return vm_opcode != VmOpcodes::NO_OPCODE;
 }

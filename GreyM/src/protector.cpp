@@ -30,6 +30,8 @@ enum class OffsetRelativeTo {
   RelocSection,
   VirtualizedCodeSection,
   Beginning,
+
+  Unknown
 };
 
 struct FixupDescriptor {
@@ -56,12 +58,29 @@ struct FixupContext {
   std::vector<Fixup> fixups;
 };
 
+enum class WhatToVirtualize { TextSection, VmLoaderSection };
+
+struct VirtualizerContext {
+  std::vector<uintptr_t> original_pe_relocation_rvas;
+  IMAGE_NT_HEADERS original_pe_nt_headers;
+  uint32_t interpreter_function_offset;
+  IMAGE_SECTION_HEADER original_text_section_header;
+  uint32_t total_virtualized_instructions = 0;
+  uint32_t total_disassembled_instructions = 0;
+  WhatToVirtualize what_to_virtualize;
+  IMAGE_SECTION_HEADER vm_loader_section_header;
+
+  Section original_text_section_copy;
+};
+
 struct ProtectorContext {
+  // The sections that will either be created or modified
   Section vm_loader_section;
   Section virtualized_code_section;
   Section new_text_section;
 
   FixupContext fixup_context;
+  VirtualizerContext virtualizer_context;
 };
 
 std::vector<uintptr_t> GetRelocationsWithinInstruction(
@@ -202,6 +221,13 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
 
     // Store the index of my TLS callback to be used later when adding a fixup for it
     const auto my_tls_callback_index = tls_callback_list.size();
+
+    /*
+      NOTE: 
+        If I change the order of MY TLS callbacks, I need to update 
+        FixNextCorruptedTlsCallback() because they depend on the fact 
+        that they are the 2 last TLS callbacks
+    */
 
     // Add the address of my own TLS callback
     tls_callback_list.push_back( DEFAULT_PE_BASE_ADDRESS +
@@ -1007,6 +1033,371 @@ PortableExecutable AssembleNewPe( const PortableExecutable& original_pe,
   return pe::Build( new_header_data, new_sections );
 }
 
+void EachInstructionCallback( const cs_insn& instruction,
+                              const uint8_t*,
+                              void* data ) {
+  auto context = reinterpret_cast<ProtectorContext*>( data );
+
+  const auto& original_pe_nt_headers =
+      context->virtualizer_context.original_pe_nt_headers;
+
+  const auto vm_opcode = virtualizer::GetVmOpcode( instruction );
+
+  if ( virtualizer::IsVirtualizeable( instruction, vm_opcode ) ) {
+    if ( instruction.detail->x86.eflags != 0 ) {
+      // NOTE: Consider using this eflags to describe what eflags
+      // it changes when virtualizing the instructions for the interpreter
+      throw std::runtime_error(
+          "An instruction changing eflags was found, not supported at the "
+          "moment" );
+    }
+
+    // Get the relocations within the instruction, if any exists
+    const auto relocations_rva_within_instruction =
+        GetRelocationsWithinInstruction(
+            instruction,
+            context->virtualizer_context.original_pe_relocation_rvas );
+
+    const uint32_t vm_opcode_encyption_key = RandomU32( 1000, 10000000 );
+
+    const auto virtualized_shellcode = virtualizer::CreateVirtualizedShellcode(
+        instruction, vm_opcode, vm_opcode_encyption_key,
+        relocations_rva_within_instruction );
+
+    const bool created_vm_code = virtualized_shellcode.GetBuffer().size() > 0;
+
+    if ( created_vm_code ) {
+      const auto virtualized_code_offset =
+          context->virtualized_code_section.AppendCode(
+              virtualized_shellcode.GetBuffer(),
+              original_pe_nt_headers.OptionalHeader.SectionAlignment,
+              original_pe_nt_headers.OptionalHeader.FileAlignment );
+
+      // generate loader shellcode for the virtualized shellcode
+      auto vm_code_loader_shellcode =
+          virtualizer::GetLoaderShellcodeForVirtualizedCode(
+              instruction, vm_opcode,
+              original_pe_nt_headers.OptionalHeader.ImageBase );
+
+      vm_code_loader_shellcode.ModifyVariable( VmOpcodeEncryptionKeyVariable,
+                                               vm_opcode_encyption_key );
+
+      vm_code_loader_shellcode.ModifyVariable<uintptr_t>(
+          VmCodeAddrVariable, virtualized_code_offset );
+
+      const auto loader_shellcode_offset_before =
+          context->vm_loader_section.GetCurrentOffset();
+
+      const auto vm_core_function_shellcode_offset =
+          vm_code_loader_shellcode.GetNamedValueOffset(
+              VmCoreFunctionVariable );
+
+      constexpr auto kCallInstructionSize = 5;
+
+      // this value does not need to be fixed up as we did the others because
+      // it it is a call to something in the SAME SECTION
+      vm_code_loader_shellcode.ModifyVariable<uint32_t>(
+          VmCoreFunctionVariable,
+          context->virtualizer_context.interpreter_function_offset -
+              loader_shellcode_offset_before - kCallInstructionSize -
+              vm_core_function_shellcode_offset + 1 );
+
+      constexpr uint32_t kJmpInstructionSize = 5;
+
+      const auto orig_addr_value_offset =
+          vm_code_loader_shellcode.GetNamedValueOffset( OrigAddrVariable );
+
+      const auto destination =
+          static_cast<uint32_t>( instruction.address + instruction.size );
+
+      const auto origin = static_cast<uint32_t>(
+          loader_shellcode_offset_before + orig_addr_value_offset );
+
+      vm_code_loader_shellcode.ModifyVariable<uint32_t>(
+          OrigAddrVariable, destination - origin - kJmpInstructionSize + 1 );
+
+      // Append the vm loader shellcode to the vm loader section
+      const auto loader_shellcode_offset =
+          context->vm_loader_section.AppendCode(
+              vm_code_loader_shellcode.GetBuffer(),
+              original_pe_nt_headers.OptionalHeader.SectionAlignment,
+              original_pe_nt_headers.OptionalHeader.FileAlignment );
+
+      ////////////////////////////
+      // AddJmpBackAddrToFixup
+      Fixup jmp_back_addr_fixup;
+      jmp_back_addr_fixup.offset =
+          loader_shellcode_offset + orig_addr_value_offset;
+      jmp_back_addr_fixup.desc.offset_type = OffsetRelativeTo::VmLoaderSection;
+      jmp_back_addr_fixup.desc.operation =
+          FixupOperation::SubtractVmLoaderSectionVirtualAddress;
+      jmp_back_addr_fixup.desc.size = sizeof( uint32_t );
+      context->fixup_context.fixups.push_back( jmp_back_addr_fixup );
+      ////////////////////////////////
+
+      ///////////////////
+      // AddVmCodeAddressToFixup
+      const auto vm_code_addr_offset =
+          loader_shellcode_offset +
+          vm_code_loader_shellcode.GetNamedValueOffset( VmCodeAddrVariable );
+
+      Fixup virtualized_code_addr_fixup;
+      virtualized_code_addr_fixup.offset = vm_code_addr_offset;
+      virtualized_code_addr_fixup.desc.offset_type =
+          OffsetRelativeTo::VmLoaderSection;
+      virtualized_code_addr_fixup.desc.operation =
+          FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
+      virtualized_code_addr_fixup.desc.size = sizeof( uint32_t );
+      context->fixup_context.fixups.push_back( virtualized_code_addr_fixup );
+
+      const auto vm_var_section_shellcode_offset =
+          vm_code_loader_shellcode.GetNamedValueOffset( ImageBaseVariable );
+
+      // add fixup for the image base argument for interpreter call
+      context->fixup_context.vm_section_offsets_to_add_to_relocation_table
+          .push_back( loader_shellcode_offset +
+                      vm_var_section_shellcode_offset );
+      ///////////////
+
+      // WriteJump(IMAGE_SECTION_HEADER* section, instruction_address)
+
+      uintptr_t section_offset = 0;
+      uint8_t* section_data = 0;
+      OffsetRelativeTo jmp_fixup_relative_to = OffsetRelativeTo::Unknown;
+
+      switch ( context->virtualizer_context.what_to_virtualize ) {
+        case WhatToVirtualize::TextSection: {
+          section_offset = section::RvaToSectionOffset(
+              context->virtualizer_context.original_text_section_header,
+              static_cast<uint32_t>( instruction.address ) );
+
+          section_data = context->new_text_section.GetData()->data();
+
+          jmp_fixup_relative_to = OffsetRelativeTo::TextSection;
+        } break;
+        case WhatToVirtualize::VmLoaderSection: {
+          section_offset = section::RvaToSectionOffset(
+              context->virtualizer_context.vm_loader_section_header,
+              static_cast<uint32_t>( instruction.address ) );
+
+          section_data = context->vm_loader_section.GetData()->data();
+
+          jmp_fixup_relative_to = OffsetRelativeTo::VmLoaderSection;
+        } break;
+        default:
+          assert( false );
+          break;
+      }
+
+      const auto first = section_data + section_offset;
+
+      const auto last = first + instruction.size;
+      const auto dest = first;
+
+      // Fill the whole instruction with random bytes
+      std::transform( first, last, dest,
+                      []( uint8_t b ) { return RandomU8(); } );
+
+      constexpr uint8_t kJmpOpcode = 0xE9;
+
+      // Write the jump
+      *first = kJmpOpcode;
+
+      const auto jmp_addr_offset = section_offset + 1;
+
+      const uint32_t jmp_destination =
+          static_cast<uint32_t>( loader_shellcode_offset -
+                                 instruction.address ) -
+          kJmpInstructionSize;
+
+      // Cast the jump desination to a uint8_t array because the section data
+      // is in uint8_t format
+      const auto jmp_destination_as_uint8_array =
+          reinterpret_cast<const uint8_t*>( &jmp_destination );
+
+      // Write the jump destination
+      std::copy( jmp_destination_as_uint8_array,
+                 jmp_destination_as_uint8_array + sizeof( jmp_destination ),
+                 section_data + jmp_addr_offset );
+
+      Fixup jmp_to_vm_loader_fixup;
+      jmp_to_vm_loader_fixup.offset = jmp_addr_offset;
+      jmp_to_vm_loader_fixup.desc.offset_type = jmp_fixup_relative_to;
+      jmp_to_vm_loader_fixup.desc.operation =
+          FixupOperation::AddVmLoaderSectionVirtualAddress;
+      jmp_to_vm_loader_fixup.desc.size = sizeof( uint32_t );
+      context->fixup_context.fixups.push_back( jmp_to_vm_loader_fixup );
+
+      // if it was relocated, add it to a list to remove the relocation later
+      // on from PE because when we virtualize an instruction, we handle the relocation ourselve
+      for ( const auto reloc_rva : relocations_rva_within_instruction ) {
+        context->fixup_context.relocation_rvas_to_remove.push_back( reloc_rva );
+      }
+
+      ++context->virtualizer_context.total_virtualized_instructions;
+
+      file_log::Info( "Virtualized 0x%08I64x, %s %s", instruction.address,
+                      instruction.mnemonic, instruction.op_str );
+    }
+  }
+
+  ++context->virtualizer_context.total_disassembled_instructions;
+};
+
+// Because the disassembler can get it wrong sometimes, we add a callback to reset
+// the virtualized instruction if it notices that it disassembled invalid instructions
+void InvalidInstructionCallback( const uint64_t address,
+                                 const SmallInstructionData ins_data,
+                                 void* data ) {
+  auto context = reinterpret_cast<ProtectorContext*>( data );
+
+  const auto text_section_offset = section::RvaToSectionOffset(
+      context->virtualizer_context.original_text_section_header, address );
+
+  // NOTE: THERE IS MORE WE NEED TO DO HERE I THINK
+  //assert( false && "verify if the changes made here are correct" );
+
+  //const auto text_section_data =
+  //    original_pe.GetPeImagePtr() +
+  //    original_text_section_header.PointerToRawData;
+  const auto text_section_data = context->new_text_section.GetData()->data();
+
+  auto original_pe_text_section_data =
+      context->virtualizer_context.original_text_section_copy.GetData();
+
+  // TODO: replace with std::copy
+  // if the invalid instruction was virtualized, we reset it back here
+  // below
+  memcpy( text_section_data + text_section_offset,
+          &( *original_pe_text_section_data )[ text_section_offset ],
+          ins_data.instruction_size_ );
+
+  // Do this disgusting hack for now, change later
+  cs_insn temp_instruction;
+  temp_instruction.size = ins_data.instruction_size_;
+  temp_instruction.address = address;
+
+  // Get the relocations within the instruction, if any exists
+  const auto relocations_rva_within_instruction =
+      GetRelocationsWithinInstruction(
+          temp_instruction,
+          context->virtualizer_context.original_pe_relocation_rvas );
+
+  // Remove the relocations from the remove-list
+  // In other words, restore the relocations that were previously removed
+  for ( const auto& reloc_rva : relocations_rva_within_instruction ) {
+    const auto it_result = std::find(
+        context->fixup_context.relocation_rvas_to_remove.cbegin(),
+        context->fixup_context.relocation_rvas_to_remove.cend(), reloc_rva );
+
+    const bool found =
+        it_result != context->fixup_context.relocation_rvas_to_remove.end();
+
+    if ( found ) {
+      context->fixup_context.relocation_rvas_to_remove.erase( it_result );
+    }
+  }
+
+  char buf[ MAX_PATH ]{ 0 };
+  sprintf_s( buf, "Resetting invalid instruction 0x%08I64x\n",
+             static_cast<uint64_t>( address ) );
+  printf( "%s\n", buf );
+};
+
+// Takes in the almost finished PE and virtualizes the TLS callbacks that we added in the beginning
+PortableExecutable VirtualizeMyTlsCallbacks(
+    const PortableExecutable& new_pe,
+    const PortableExecutable& original_pe,
+    const PortableExecutable& interpreter_pe,
+    const IMAGE_NT_HEADERS& original_pe_nt_headers,
+    const IMAGE_SECTION_HEADER& original_text_section_header,
+    ProtectorContext* context ) {
+  // Since we are going to create a new PE based on the previously
+  // created PE, we can re-use the same protector context
+  // We only need to update one value inside of it
+
+  std::vector<uintptr_t> new_pe_relocation_rvas = GetRelocationRvas( new_pe );
+
+  // Sort for quick binary search
+  std::sort( new_pe_relocation_rvas.begin(), new_pe_relocation_rvas.end() );
+
+  // Update the original relocations to the new PE relocations
+  context->virtualizer_context.original_pe_relocation_rvas =
+      new_pe_relocation_rvas;
+
+  const auto vm_loader_section_header =
+      new_pe.GetSectionHeaders().FromName( VM_LOADER_SECTION_NAME );
+
+  context->virtualizer_context.vm_loader_section_header =
+      *vm_loader_section_header;
+
+  const auto OnInvalidInstructionCallback =
+      []( const uint64_t address, const SmallInstructionData ins_data, void* ) {
+        // We do not anticipate this will occur in such small code such as my TLS callbacks
+        throw std::runtime_error(
+            "An invalid instruction was disassembled while trying to "
+            "virtualize our own code." );
+      };
+
+  PeDisassemblyEngine pe_disassembler( new_pe );
+
+  const auto first_interpreter_tls_callback_offset =
+      GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
+                                                  "FirstTlsCallback" );
+
+  const auto second_interpreter_tls_callback_offset =
+      GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
+                                                  "SecondTlsCallback" );
+
+  assert( first_interpreter_tls_callback_offset ||
+          second_interpreter_tls_callback_offset );
+
+  // Add my TLS callbacks as disassembly points for the disassembly engine
+  {
+    const auto first_tls_callback_offset =
+        vm_loader_section_header->PointerToRawData +
+        first_interpreter_tls_callback_offset;
+
+    const auto first_tls_callback_rva =
+        vm_loader_section_header->VirtualAddress +
+        first_interpreter_tls_callback_offset;
+
+    DisassemblyPoint disasm_point;
+    disasm_point.code = new_pe.GetPeImagePtr() + first_tls_callback_offset;
+    disasm_point.rva = first_tls_callback_rva;
+    pe_disassembler.AddDisassemblyPoint( disasm_point );
+
+    // Set the disassembly point to the first TLS callback
+    pe_disassembler.SetDisassemblyPoint(
+        disasm_point, vm_loader_section_header->SizeOfRawData );
+  }
+  {
+    const auto second_tls_callback_offset =
+        vm_loader_section_header->PointerToRawData +
+        second_interpreter_tls_callback_offset;
+
+    const auto second_tls_callback_rva =
+        vm_loader_section_header->VirtualAddress +
+        second_interpreter_tls_callback_offset;
+
+    DisassemblyPoint disasm_point;
+    disasm_point.code = new_pe.GetPeImagePtr() + second_tls_callback_offset;
+    disasm_point.rva = second_tls_callback_rva;
+    pe_disassembler.AddDisassemblyPoint( disasm_point );
+  }
+
+  pe_disassembler.BeginDisassembling( EachInstructionCallback,
+                                      OnInvalidInstructionCallback, context );
+
+  // Re-create the PE again with the virtualized TLS callbacks
+  auto new_pe_result = AssembleNewPe( original_pe, context );
+
+  FixFinishedPe( &new_pe_result, original_text_section_header,
+                 context->fixup_context.fixups );
+
+  return new_pe_result;
+}
+
 PortableExecutable Protect( PortableExecutable original_pe ) {
   const auto original_pe_nt_headers = *original_pe.GetNtHeaders();
 
@@ -1024,6 +1415,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   }
 #endif
 
+  // Before the original_pe argument is touched, initialize the disassembly engine with it
   PeDisassemblyEngine pe_disassembler( original_pe );
 
   // todo make the section sizes aligned with the remap
@@ -1035,7 +1427,9 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
     throw std::runtime_error( "Interpreter is not valid portable executable" );
   }
 
-  const auto interpreter_function_offset =
+  ProtectorContext context;
+
+  context.virtualizer_context.interpreter_function_offset =
       GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
                                                   "VmInterpreter" );
 
@@ -1044,8 +1438,6 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   // Therefore we need to relocate them as well in order to be able to use them.
   RelocateInterpreterPe( &interpreter_pe,
                          original_pe_nt_headers.OptionalHeader.ImageBase );
-
-  ProtectorContext context;
 
   context.vm_loader_section = CreateVmSection( interpreter_pe );
 
@@ -1064,268 +1456,35 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   // Save the text section before modifying it for use later
   // when an invalid instruction has been virtualized to reset the instruction
-  const auto original_text_section_copy =
+  context.virtualizer_context.original_text_section_copy =
       original_pe.CopySectionDeep( &original_text_section_header );
 
   // The text section that will be modified with jumps
   context.new_text_section =
       original_pe.CopySectionDeep( &original_text_section_header );
 
+  context.virtualizer_context.original_text_section_header =
+      original_text_section_header;
+
   Stopwatch stopwatch;
   stopwatch.Start();
 
   AddInterpreterRelocationsToFixup( interpreter_pe, &context );
 
-  uint32_t total_virtualized_instructions = 0;
-  uint32_t total_disassembled_instructions = 0;
-
-  std::vector<uintptr_t> original_pe_relocation_rvas =
+  context.virtualizer_context.original_pe_relocation_rvas =
       GetRelocationRvas( original_pe );
 
   // Sort for quick binary search
-  std::sort( original_pe_relocation_rvas.begin(),
-             original_pe_relocation_rvas.end() );
+  std::sort( context.virtualizer_context.original_pe_relocation_rvas.begin(),
+             context.virtualizer_context.original_pe_relocation_rvas.end() );
 
-  const auto EachInstructionCallback = [&]( const cs_insn& instruction,
-                                            const uint8_t* ) {
-    const auto vm_opcode = virtualizer::GetVmOpcode( instruction );
+  context.virtualizer_context.original_pe_nt_headers = original_pe_nt_headers;
 
-    if ( virtualizer::IsVirtualizeable( instruction, vm_opcode ) ) {
-      if ( instruction.detail->x86.eflags != 0 ) {
-        // NOTE: Consider using this eflags to describe what eflags
-        // it changes when virtualizing the instructions for the interpreter
-        throw std::runtime_error(
-            "An instruction changing eflags was found, not supported at the "
-            "moment" );
-      }
+  context.virtualizer_context.what_to_virtualize =
+      WhatToVirtualize::TextSection;
 
-      // Get the relocations within the instruction, if any exists
-      const auto relocations_rva_within_instruction =
-          GetRelocationsWithinInstruction( instruction,
-                                           original_pe_relocation_rvas );
-
-      const uint32_t vm_opcode_encyption_key = RandomU32( 1000, 10000000 );
-
-      const auto virtualized_shellcode =
-          virtualizer::CreateVirtualizedShellcode(
-              instruction, vm_opcode, vm_opcode_encyption_key,
-              relocations_rva_within_instruction );
-
-      const bool created_vm_code = virtualized_shellcode.GetBuffer().size() > 0;
-
-      if ( created_vm_code ) {
-        const auto virtualized_code_offset =
-            context.virtualized_code_section.AppendCode(
-                virtualized_shellcode.GetBuffer(),
-                original_pe_nt_headers.OptionalHeader.SectionAlignment,
-                original_pe_nt_headers.OptionalHeader.FileAlignment );
-
-        // generate loader shellcode for the virtualized shellcode
-        auto vm_code_loader_shellcode =
-            virtualizer::GetLoaderShellcodeForVirtualizedCode(
-                instruction, vm_opcode,
-                original_pe_nt_headers.OptionalHeader.ImageBase );
-
-        vm_code_loader_shellcode.ModifyVariable( VmOpcodeEncryptionKeyVariable,
-                                                 vm_opcode_encyption_key );
-
-        vm_code_loader_shellcode.ModifyVariable<uintptr_t>(
-            VmCodeAddrVariable, virtualized_code_offset );
-
-        const auto loader_shellcode_offset_before =
-            context.vm_loader_section.GetCurrentOffset();
-
-        const auto vm_core_function_shellcode_offset =
-            vm_code_loader_shellcode.GetNamedValueOffset(
-                VmCoreFunctionVariable );
-
-        constexpr auto kCallInstructionSize = 5;
-
-        // this value does not need to be fixed up as we did the others because
-        // it it is a call to something in the SAME SECTION
-        vm_code_loader_shellcode.ModifyVariable<uint32_t>(
-            VmCoreFunctionVariable,
-            interpreter_function_offset - loader_shellcode_offset_before -
-                kCallInstructionSize - vm_core_function_shellcode_offset + 1 );
-
-        constexpr uint32_t kJmpInstructionSize = 5;
-
-        const auto orig_addr_value_offset =
-            vm_code_loader_shellcode.GetNamedValueOffset( OrigAddrVariable );
-
-        const auto destination =
-            static_cast<uint32_t>( instruction.address + instruction.size );
-
-        const auto origin = static_cast<uint32_t>(
-            loader_shellcode_offset_before + orig_addr_value_offset );
-
-        vm_code_loader_shellcode.ModifyVariable<uint32_t>(
-            OrigAddrVariable, destination - origin - kJmpInstructionSize + 1 );
-
-        const auto loader_shellcode_offset =
-            context.vm_loader_section.AppendCode(
-                vm_code_loader_shellcode.GetBuffer(),
-                original_pe_nt_headers.OptionalHeader.SectionAlignment,
-                original_pe_nt_headers.OptionalHeader.FileAlignment );
-
-        Fixup jmp_back_addr_fixup;
-        jmp_back_addr_fixup.offset =
-            loader_shellcode_offset + orig_addr_value_offset;
-        jmp_back_addr_fixup.desc.offset_type =
-            OffsetRelativeTo::VmLoaderSection;
-        jmp_back_addr_fixup.desc.operation =
-            FixupOperation::SubtractVmLoaderSectionVirtualAddress;
-        jmp_back_addr_fixup.desc.size = sizeof( uint32_t );
-        context.fixup_context.fixups.push_back( jmp_back_addr_fixup );
-
-        const auto vm_code_addr_offset =
-            loader_shellcode_offset +
-            vm_code_loader_shellcode.GetNamedValueOffset( VmCodeAddrVariable );
-
-        Fixup virtualized_code_addr_fixup;
-        virtualized_code_addr_fixup.offset = vm_code_addr_offset;
-        virtualized_code_addr_fixup.desc.offset_type =
-            OffsetRelativeTo::VmLoaderSection;
-        virtualized_code_addr_fixup.desc.operation =
-            FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
-        virtualized_code_addr_fixup.desc.size = sizeof( uint32_t );
-        context.fixup_context.fixups.push_back( virtualized_code_addr_fixup );
-
-        const auto vm_var_section_shellcode_offset =
-            vm_code_loader_shellcode.GetNamedValueOffset( ImageBaseVariable );
-
-        // add fixup for the image base argument for interpreter call
-        context.fixup_context.vm_section_offsets_to_add_to_relocation_table
-            .push_back( loader_shellcode_offset +
-                        vm_var_section_shellcode_offset );
-
-        const auto instruction_text_section_offset =
-            section::RvaToSectionOffset(
-                original_text_section_header,
-                static_cast<uint32_t>( instruction.address ) );
-
-        const auto text_section_data =
-            context.new_text_section.GetData()->data();
-
-        const auto first = text_section_data + instruction_text_section_offset;
-
-        const auto last = first + instruction.size;
-        const auto dest = first;
-
-        // Fill the whole instruction with random bytes
-        std::transform( first, last, dest,
-                        []( uint8_t b ) { return RandomU8(); } );
-
-        constexpr uint8_t kJmpOpcode = 0xE9;
-
-        // Write the jump
-        *first = kJmpOpcode;
-
-        const auto jmp_addr_offset = instruction_text_section_offset + 1;
-
-        const uint32_t jmp_destination =
-            static_cast<uint32_t>( loader_shellcode_offset -
-                                   instruction.address ) -
-            kJmpInstructionSize;
-
-        // Cast the jump desination to a uint8_t array because the section data
-        // is in uint8_t format
-        const auto jmp_destination_as_uint8_array =
-            reinterpret_cast<const uint8_t*>( &jmp_destination );
-
-        // Write the jump destination
-        std::copy( jmp_destination_as_uint8_array,
-                   jmp_destination_as_uint8_array + sizeof( jmp_destination ),
-                   text_section_data + jmp_addr_offset );
-
-        Fixup jmp_to_vm_loader_fixup;
-        jmp_to_vm_loader_fixup.offset = jmp_addr_offset;
-        jmp_to_vm_loader_fixup.desc.offset_type = OffsetRelativeTo::TextSection;
-        jmp_to_vm_loader_fixup.desc.operation =
-            FixupOperation::AddVmLoaderSectionVirtualAddress;
-        jmp_to_vm_loader_fixup.desc.size = sizeof( uint32_t );
-        context.fixup_context.fixups.push_back( jmp_to_vm_loader_fixup );
-
-        // if it was relocated, add it to a list to remove the relocation later
-        // on from PE because when we virtualize an instruction, we handle the relocation ourselve
-        for ( const auto reloc_rva : relocations_rva_within_instruction ) {
-          context.fixup_context.relocation_rvas_to_remove.push_back(
-              reloc_rva );
-        }
-
-        ++total_virtualized_instructions;
-
-        file_log::Info( "Virtualized 0x%08I64x, %s %s", instruction.address,
-                        instruction.mnemonic, instruction.op_str );
-      }
-    }
-
-    ++total_disassembled_instructions;
-  };
-
-  // Because the disassembler can get it wrong sometimes, we add a callback to reset
-  // the virtualized instruction if it notices that it disassembled invalid instructions
-  const auto InvalidInstructionCallback =
-      [&]( const uint64_t address, const SmallInstructionData ins_data ) {
-        const auto text_section_offset = section::RvaToSectionOffset(
-            original_text_section_header, address );
-
-        // NOTE: THERE IS MORE WE NEED TO DO HERE I THINK
-        //assert( false && "verify if the changes made here are correct" );
-
-        //const auto text_section_data =
-        //    original_pe.GetPeImagePtr() +
-        //    original_text_section_header.PointerToRawData;
-        const auto text_section_data =
-            context.new_text_section.GetData()->data();
-
-        auto original_pe_text_section_data =
-            original_text_section_copy.GetData();
-
-        // TODO: replace with std::copy
-        // if the invalid instruction was virtualized, we reset it back here
-        // below
-        memcpy( text_section_data + text_section_offset,
-                &( *original_pe_text_section_data )[ text_section_offset ],
-                ins_data.instruction_size_ );
-
-        // Do this disgusting hack for now, change later
-        cs_insn temp_instruction;
-        temp_instruction.size = ins_data.instruction_size_;
-        temp_instruction.address = address;
-
-        // Get the relocations within the instruction, if any exists
-        const auto relocations_rva_within_instruction =
-            GetRelocationsWithinInstruction( temp_instruction,
-                                             original_pe_relocation_rvas );
-
-        // Remove the relocations from the remove-list
-        // In other words, restore the relocations that were previously removed
-        for ( const auto& reloc_rva : relocations_rva_within_instruction ) {
-          const auto it_result = std::find(
-              context.fixup_context.relocation_rvas_to_remove.cbegin(),
-              context.fixup_context.relocation_rvas_to_remove.cend(),
-              reloc_rva );
-
-          const bool found =
-              it_result !=
-              context.fixup_context.relocation_rvas_to_remove.end();
-
-          if ( found ) {
-            context.fixup_context.relocation_rvas_to_remove.erase( it_result );
-          }
-        }
-
-        char buf[ MAX_PATH ]{ 0 };
-        sprintf_s( buf, "Resetting invalid instruction 0x%08I64x\n",
-                   static_cast<uint64_t>( address ) );
-        printf( "%s\n", buf );
-      };
-
-  pe_disassembler.DisassembleFromEntrypoint( EachInstructionCallback,
-                                             InvalidInstructionCallback );
-
-  stopwatch.Stop();
+  pe_disassembler.DisassembleFromEntrypoint(
+      EachInstructionCallback, InvalidInstructionCallback, &context );
 
 #if 0
   // IF WE ADD PADDING THIS LATE TO THE LAST SECTION the calculate
@@ -1366,20 +1525,28 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   RemoveRelocations( context.fixup_context.relocation_rvas_to_remove,
                      &original_pe );
 
+  // Build and fix the almost finished PE
   auto new_pe = AssembleNewPe( original_pe, &context );
 
   FixFinishedPe( &new_pe, original_text_section_header,
                  context.fixup_context.fixups );
 
-  // printf( "%s", output_log.c_str() );
+  context.virtualizer_context.what_to_virtualize =
+      WhatToVirtualize::VmLoaderSection;
+
+  // Now virtualize the TLS callbacks that we added in the beginning and
+  // create a new PE again with the virtualized TLS callbacks
+  new_pe = VirtualizeMyTlsCallbacks( new_pe, original_pe, interpreter_pe,
+                                     original_pe_nt_headers,
+                                     original_text_section_header, &context );
+
+  stopwatch.Stop();
 
   printf( "Total Disassembled Instructions: %d\n",
-          total_disassembled_instructions );
-
-  // i have just removed all use of custom_data
+          context.virtualizer_context.total_disassembled_instructions );
 
   printf( "Total Virtualized Instructions: %d\n",
-          total_virtualized_instructions );
+          context.virtualizer_context.total_virtualized_instructions );
 
   printf( "Time spent: %f ms\n", stopwatch.GetElapsedMilliseconds() );
 
