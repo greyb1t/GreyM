@@ -809,9 +809,9 @@ std::vector<uintptr_t> GetRelocationRvas( const PortableExecutable& pe ) {
   return relocation_rvas;
 }
 
-void FixFinishedPe( PortableExecutable* pe,
-                    const IMAGE_SECTION_HEADER& text_section,
-                    const std::vector<Fixup>& fixups ) {
+void ApplyFixups( PortableExecutable* pe,
+                  const IMAGE_SECTION_HEADER& text_section,
+                  const std::vector<Fixup>& fixups ) {
   // A lazy fix to avoid the fact that some instructions that we virtualize
   // have an entry in the relocation table
   // If we disable the dynamic base address, there is no need to relocate
@@ -956,6 +956,7 @@ void FixFinishedPe( PortableExecutable* pe,
 
   auto section = IMAGE_FIRST_SECTION( new_nt_headers );
 
+  // NOTE: CANNOT DO IT HERE ANYMORE BECAUSE I ADDED VIRTUALIZATION FOR MY TLS CALLBACKS
 // After everything is done, rename the sections.
 // We cannot do earlier because all code are dependant on the section names
 #if 0
@@ -1392,8 +1393,8 @@ PortableExecutable VirtualizeMyTlsCallbacks(
   // Re-create the PE again with the virtualized TLS callbacks
   auto new_pe_result = AssembleNewPe( original_pe, context );
 
-  FixFinishedPe( &new_pe_result, original_text_section_header,
-                 context->fixup_context.fixups );
+  ApplyFixups( &new_pe_result, original_text_section_header,
+               context->fixup_context.fixups );
 
   return new_pe_result;
 }
@@ -1525,20 +1526,28 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   RemoveRelocations( context.fixup_context.relocation_rvas_to_remove,
                      &original_pe );
 
+  // Save a copy of the context before we build the first PE. Why?
+  // Because it modifes the context and adds fixup that we don't want
+  // added when we build the absolutely last version of the PE
+  // Ugly way to do it :(
+  ProtectorContext context_saved = context;
+
   // Build and fix the almost finished PE
   auto new_pe = AssembleNewPe( original_pe, &context );
 
-  FixFinishedPe( &new_pe, original_text_section_header,
-                 context.fixup_context.fixups );
+  // NOTE: We do not need to fixup this version of the PE because we
+  // only use this version to virtualize my TLS callbacks
+  ApplyFixups( &new_pe, original_text_section_header,
+               context.fixup_context.fixups );
 
-  context.virtualizer_context.what_to_virtualize =
+  context_saved.virtualizer_context.what_to_virtualize =
       WhatToVirtualize::VmLoaderSection;
 
   // Now virtualize the TLS callbacks that we added in the beginning and
   // create a new PE again with the virtualized TLS callbacks
-  new_pe = VirtualizeMyTlsCallbacks( new_pe, original_pe, interpreter_pe,
-                                     original_pe_nt_headers,
-                                     original_text_section_header, &context );
+  new_pe = VirtualizeMyTlsCallbacks(
+      new_pe, original_pe, interpreter_pe, original_pe_nt_headers,
+      original_text_section_header, &context_saved );
 
   stopwatch.Stop();
 
