@@ -39,8 +39,15 @@ class Section {
                         const uint32_t section_alignment,
                         const uint32_t file_alignment );
 
+  uintptr_t AppendCode( const uint8_t* buffer,
+                        const uintptr_t size,
+                        const uint32_t file_alignment );
+
+  template <typename T>
+  uintptr_t AppendCode( const T& variable, const uint32_t file_alignment );
+
   std::string GetName() const;
-  void SetName(const std::string& name);
+  void SetName( const std::string& name );
 
   const IMAGE_SECTION_HEADER& GetSectionHeader() const;
 
@@ -59,3 +66,11 @@ class Section {
   friend PortableExecutable pe::Build( const std::vector<uint8_t>& header,
                                        const std::vector<Section>& sections );
 };
+
+template <typename T>
+uintptr_t Section::AppendCode( const T& variable,
+                               const uint32_t file_alignment ) {
+  const auto buf = reinterpret_cast<const uint8_t*>( &variable );
+
+  return AppendCode( buf, sizeof( T ), file_alignment );
+}

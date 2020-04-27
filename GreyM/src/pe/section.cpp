@@ -16,9 +16,15 @@ Section::Section( const IMAGE_SECTION_HEADER& section_header,
 uintptr_t Section::AppendCode( const std::vector<uint8_t>& code,
                                const uint32_t section_alignment,
                                const uint32_t file_alignment ) {
+  return AppendCode( &code[ 0 ], code.size(), file_alignment );
+}
+
+uintptr_t Section::AppendCode( const uint8_t* buffer,
+                               const uintptr_t size,
+                               const uint32_t file_alignment ) {
   const auto current_offset = data_.size();
 
-  data_.insert( data_.end(), code.cbegin(), code.cend() );
+  data_.insert( data_.end(), buffer, buffer + size );
 
   section_header_.SizeOfRawData =
       peutils::AlignUp( data_.size(), file_alignment );
@@ -62,9 +68,6 @@ Section section::CreateEmptySection( const std::string& name,
   Section section;
 
   section.section_header_.Characteristics = characteristics;
-  // IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE |
-  // IMAGE_SCN_CNT_CODE | IMAGE_SCN_CNT_INITIALIZED_DATA |
-  // IMAGE_SCN_CNT_UNINITIALIZED_DATA;
 
   section.SetName( name );
 

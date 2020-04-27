@@ -1399,6 +1399,35 @@ PortableExecutable VirtualizeMyTlsCallbacks(
   return new_pe_result;
 }
 
+void ObfuscateImports( PortableExecutable* pe,
+                       ProtectorContext* context,
+                       VmCodeSectionData* vm_code_section_data ) {
+  // Extra: Encrypt the whole import directory to avoid someone from seeing the dll and function names in strings?
+
+  // Instead of making it complicated simply:
+  //  Save the encrypted import data directory in the vm code section
+  //  Remove the import table info from header
+  //  Decrypt the address in the TLS callback
+  //  Fix the imports manually
+
+  const auto nt_headers = pe->GetNtHeaders();
+  const auto import_data_directory =
+      &nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT ];
+
+  vm_code_section_data->import_data_directory = *import_data_directory;
+
+  import_data_directory->Size = 0;
+  import_data_directory->VirtualAddress = 0;
+
+  const auto iat_data_directory =
+      &nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IAT ];
+
+  // IMAGE_DIRECTORY_ENTRY_IMPORT and IMAGE_DIRECTORY_ENTRY_IAT goes hand in
+  // hand, we must remove both of them to avoid crash in ntdll PE loader
+  iat_data_directory->Size = 0;
+  iat_data_directory->VirtualAddress = 0;
+}
+
 PortableExecutable Protect( PortableExecutable original_pe ) {
   const auto original_pe_nt_headers = *original_pe.GetNtHeaders();
 
@@ -1447,6 +1476,29 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
       VM_CODE_SECTION_NAME, IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_DISCARDABLE |
                                 IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE
       /*IMAGE_SCN_CNT_INITIALIZED_DATA */ );
+
+  VmCodeSectionData vm_code_section_data;
+
+  // Fill with random data for fun
+  for ( int i = 0;
+        i < sizeof( vm_code_section_data.friendly_message ) / sizeof( char );
+        ++i ) {
+    vm_code_section_data.friendly_message[ i ] = RandomU8();
+  }
+
+  // Write the message for the reverse engineer'er
+  strcpy( vm_code_section_data.friendly_message,
+          "bruh, you're not supposed to be here!" );
+
+  // Obfuscate the imports before adding tls callbacks because
+  // AddTlsCallbacks adds data to the vm code section.
+  // ObfuscateImports needs to be the first one to add data
+  ObfuscateImports( &original_pe, &context, &vm_code_section_data );
+
+  // Add the init data for the vm code section
+  context.virtualized_code_section.AppendCode(
+      vm_code_section_data,
+      original_pe_nt_headers.OptionalHeader.FileAlignment );
 
 #if ENABLE_TLS_CALLBACKS
   AddTlsCallbacks( interpreter_pe, &original_pe, &context );
@@ -1545,9 +1597,9 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   // Now virtualize the TLS callbacks that we added in the beginning and
   // create a new PE again with the virtualized TLS callbacks
-  new_pe = VirtualizeMyTlsCallbacks(
-      new_pe, original_pe, interpreter_pe, original_pe_nt_headers,
-      original_text_section_header, &context_saved );
+  //new_pe = VirtualizeMyTlsCallbacks(
+  //    new_pe, original_pe, interpreter_pe, original_pe_nt_headers,
+  //    original_text_section_header, &context_saved );
 
   stopwatch.Stop();
 

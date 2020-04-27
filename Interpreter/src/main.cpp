@@ -8,6 +8,11 @@
   ENABLED ENHANCED INSTRUCTION SET: IA32 (required to avoid interpreter from
                                           using SSE2, then we would need to save the XMM registers)
 
+  Debug Version has limitations because it e.g. always initializes variables to zero.
+  With arrays, it does so with a memcpy function located in the .text section.
+  Meaning that when I virtualize my TLS callbacks, it tried to virtualize a call that 
+  is not located in the section and crashes.
+
   Protect with SEC_NO_CHANGE, then look if CreateSection was hooked or somehow
   did not succeed by trying to manipulate the protected memory. If an error
   occured while trying to change memory protection, then we're good.
@@ -72,8 +77,190 @@ void FixNextCorruptedTlsCallback( PVOID dll_base ) {
   }
 }
 
+// A basic hash function to bypass usage of string
+constexpr uintptr_t HashString( const char* s ) {
+  return *s ? static_cast<uintptr_t>( *s ) + 653119926 * HashString( s + 1 )
+            : 75438945;
+}
+
+constexpr uintptr_t HashStringBuffer( const char* s, const int size ) {
+  return size != 0 ? static_cast<uintptr_t>( *s ) +
+                         653119926 * HashStringBuffer( s + 1, size - 1 )
+                   : 75438945;
+}
+
+// A basic hash function to bypass usage of string
+constexpr uintptr_t HashWideString( const wchar_t* s ) {
+  return *s ? static_cast<uintptr_t>( *s ) + 653119926 * HashWideString( s + 1 )
+            : 75438945;
+}
+
+constexpr wchar_t ToLowerConstexpr( wchar_t c ) {
+  if ( c >= 'A' && c <= 'Z' ) {
+    return 'a' + c - 'A';
+  }
+
+  return c;
+}
+
+/*
+constexpr char ToLowerConstexpr( char c ) {
+  if ( c >= 'A' && c <= 'Z' ) {
+    return 'a' + c - 'A';
+  }
+
+  return c;
+}
+*/
+
+constexpr uintptr_t HashWideStringLowercase( const wchar_t* s ) {
+  return *s ? static_cast<uintptr_t>( ToLowerConstexpr( *s ) ) +
+                  653119926 * HashWideStringLowercase( s + 1 )
+            : 75438945;
+}
+
+constexpr uintptr_t HashWideStringLowercase( const wchar_t* s,
+                                             const int size ) {
+  return size != 0 ? static_cast<uintptr_t>( ToLowerConstexpr( *s ) ) +
+                         653119926 * HashWideStringLowercase( s + 1, size - 1 )
+                   : 75438945;
+}
+
+const PEB* GetCurrentPeb() {
+#if defined( _WIN64 )
+  uintptr_t peb_addr = __readgsqword( 0x60 );
+#else
+  uintptr_t peb_addr = __readfsdword( 0x30 );
+#endif
+  return reinterpret_cast<const PEB*>( peb_addr );
+}
+
+/*
+wchar_t ToLower( wchar_t c ) {
+  if ( c >= 'A' && c <= 'Z' ) {
+    return 'a' + c - 'A';
+  }
+
+  return c;
+}
+
+void WideToLower( wchar_t* s, wchar_t* buf_out ) {
+  for ( ; *s; ++s, ++buf_out ) {
+    *buf_out = ToLower( *s );
+  }
+}
+
+void MemorySet( uint8_t* src, int size, uint8_t value ) {
+  for ( int i = 0; i < size; ++i ) {
+    *src = value;
+    ++src;
+  }
+}
+
+void MemoryCopy( uint8_t* src, uint8_t* dest, int size ) {
+  for ( int i = 0; i < size; ++i ) {
+    *dest = *src;
+
+    ++src;
+    ++dest;
+  }
+}
+*/
+
+uintptr_t GetModule( const uintptr_t module_name_hash ) {
+  const auto peb = GetCurrentPeb();
+
+  const auto head = &peb->Ldr->InLoadOrderModuleList;
+
+  // Set the first entry
+  auto link = head->Flink;
+
+  do {
+    auto entry = reinterpret_cast<LDR_DATA_TABLE_ENTRY*>( link );
+
+    const auto name_length = entry->BaseDllName.Length / sizeof( wchar_t );
+
+    const auto current_module_hash = HashWideStringLowercase(
+        reinterpret_cast<wchar_t*>( entry->BaseDllName.Buffer ), name_length );
+
+    if ( current_module_hash == module_name_hash ) {
+      return reinterpret_cast<uintptr_t>( entry->DllBase );
+    }
+
+    link = link->Flink;
+  } while ( link != head );
+
+  return 0;
+}
+
+uintptr_t GetExport( const uintptr_t module,
+                     const uintptr_t ansi_export_name_hash ) {
+  const auto nt_headers = GetNtHeaders( reinterpret_cast<PVOID>( module ) );
+
+  const auto& export_data_directory =
+      nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_EXPORT ];
+
+  const auto export_directory = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(
+      module + export_data_directory.VirtualAddress );
+
+  const auto names =
+      reinterpret_cast<uint32_t*>( module + export_directory->AddressOfNames );
+  const auto ordinals = reinterpret_cast<uint16_t*>(
+      module + export_directory->AddressOfNameOrdinals );
+  const auto addresses = reinterpret_cast<uint32_t*>(
+      module + export_directory->AddressOfFunctions );
+
+  for ( int i = 0; i < export_directory->NumberOfNames; ++i ) {
+    const auto name = ( const char* )( module + names[ i ] );
+
+    if ( HashString( name ) == ansi_export_name_hash ) {
+      const auto address = addresses[ ordinals[ i ] ];
+      return module + address;
+    }
+  }
+
+  return 0;
+}
+
+uintptr_t GetVmCodeSection( const PVOID base ) {
+  constexpr auto vm_code_section_name_hash =
+      HashWideString( TEXT( VM_CODE_SECTION_NAME ) );
+
+  const auto nt_headers = GetNtHeaders( base );
+
+  const auto sections = IMAGE_FIRST_SECTION( nt_headers );
+
+  for ( int i = 0; i < nt_headers->FileHeader.NumberOfSections; ++i ) {
+    const auto section = &sections[ i ];
+
+    const auto section_name_hash =
+        HashString( reinterpret_cast<const char*>( section->Name ) );
+
+    if ( section_name_hash == vm_code_section_name_hash ) {
+      return reinterpret_cast<uintptr_t>( base ) + section->VirtualAddress;
+    }
+  }
+
+  return 0;
+}
+
 __declspec( dllexport ) void NTAPI
     FirstTlsCallback( PVOID dll_base, DWORD reason, PVOID reserved ) {
+  // TODO: use fiber to execute the all the code
+
+  /*
+  CONTINUE BY DOING THE BELOW:
+
+    Completetly remove import table from PE in protector
+
+    Import all things manually in the TLS callback.
+
+    Store the my own import data inside the resource.
+    Encrypt the resources.
+
+
+  */
+
   /*
     Remove the TLS callback immediately after they are called, in themselves
     That means, if we e.g. fix imports in the TLS callbacks, are they are removed once someone dumps them, means invalid PE?
@@ -81,8 +268,103 @@ __declspec( dllexport ) void NTAPI
     1. Check the integrity of the image
     2. 
   */
+
+  /*
+    Limitations:
+      We cannot use direct winapi calls
+      We cannot use strings because they are compiled into the .rdata section
+      No direct exception handling
+      Cannot use arrays due to VS Debug mode variable auto initialization, it calls a memcpy from another section..
+  */
+
   switch ( reason ) {
     case DLL_PROCESS_ATTACH: {
+      constexpr auto user32_hash = HashWideString( TEXT( "user32.dll" ) );
+      const auto user32 = GetModule( user32_hash );
+
+      constexpr auto kernel32_hash = HashWideString( TEXT( "kernel32.dll" ) );
+      const auto kernel32 = GetModule( kernel32_hash );
+
+      constexpr auto load_library_a_hash = HashString( "LoadLibraryA" );
+      const auto load_library_a = reinterpret_cast<decltype( &LoadLibraryA )>(
+          GetExport( kernel32, load_library_a_hash ) );
+
+      constexpr auto get_proc_address_hash = HashString( "GetProcAddress" );
+      const auto get_proc_address =
+          reinterpret_cast<decltype( &GetProcAddress )>(
+              GetExport( kernel32, get_proc_address_hash ) );
+
+      constexpr auto virtual_protect_hash = HashString( "VirtualProtect" );
+      const auto virtual_protect =
+          reinterpret_cast<decltype( &VirtualProtect )>(
+              GetExport( kernel32, virtual_protect_hash ) );
+
+      const uintptr_t vm_code_section_addr = GetVmCodeSection( dll_base );
+
+      if ( !vm_code_section_addr ) {
+        return;
+      }
+
+      auto vm_code_section_data =
+          reinterpret_cast<VmCodeSectionData*>( vm_code_section_addr );
+
+      const auto dll_base_addr = reinterpret_cast<uint8_t*>( dll_base );
+
+      const auto import_data_directory =
+          vm_code_section_data->import_data_directory;
+
+      if ( import_data_directory.Size > 0 ) {
+        const IMAGE_IMPORT_DESCRIPTOR* import_desc =
+            reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
+                dll_base_addr + import_data_directory.VirtualAddress );
+
+        // For each import descriptor
+        for ( auto import_desc = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
+                  dll_base_addr + import_data_directory.VirtualAddress );
+              import_desc->Name; ++import_desc ) {
+          const auto dll_name = reinterpret_cast<const char*>(
+              dll_base_addr + import_desc->Name );
+
+          const HINSTANCE dll_instance = load_library_a( dll_name );
+
+          auto original_thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(
+              dll_base_addr + import_desc->OriginalFirstThunk );
+          auto first_thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(
+              dll_base_addr + import_desc->FirstThunk );
+
+          // For each import thunk
+          for ( ; original_thunk->u1.AddressOfData;
+                ++original_thunk, ++first_thunk ) {
+            DWORD old_protection;
+            virtual_protect( first_thunk, 0x100, PAGE_EXECUTE_READWRITE,
+                             &old_protection );
+
+            if ( IMAGE_SNAP_BY_ORDINAL( original_thunk->u1.Ordinal ) ) {
+              // TODO: consider using LOWORD, read the documenttation of GetProcAddress for ordinal again
+              // TODO: Repalce with my own get proc address, support ordinal tho
+              *reinterpret_cast<uintptr_t*>( first_thunk ) =
+                  reinterpret_cast<uintptr_t>( get_proc_address(
+                      dll_instance, reinterpret_cast<char*>( LOWORD(
+                                        original_thunk->u1.Ordinal ) ) ) );
+            } else {
+              const auto import = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
+                  dll_base_addr + original_thunk->u1.AddressOfData );
+              *reinterpret_cast<uintptr_t*>( first_thunk ) =
+                  reinterpret_cast<uintptr_t>(
+                      get_proc_address( dll_instance, import->Name ) );
+            }
+
+            virtual_protect( first_thunk, 0x100, old_protection,
+                             &old_protection );
+          }
+        }
+
+        // NEED WRITE ACCESS
+        // Remove it info in case someone dumps the PE
+        vm_code_section_data->import_data_directory.Size = 0;
+        vm_code_section_data->import_data_directory.VirtualAddress = 0;
+      }
+
 #if ENABLE_TLS_CALLBACKS
       FixNextCorruptedTlsCallback( dll_base );
 #endif
@@ -101,6 +383,8 @@ __declspec( dllexport ) void NTAPI
   // 1. Decrypt all strings
   // 2. Fix all imports
   // 3. Remap
+
+  // Integrity check ONLY sections that does NOT have the writeable flags
 
   // Flow:
   // 1. Decrypt the sections, extra layer to waste time
@@ -151,15 +435,6 @@ uintptr_t* GetPointerToRegister( const VmContext* vm_context,
                                  const uint32_t reg_offset ) {
   uint8_t* register_struct_bytes = ( uint8_t* )vm_context->registers;
   return ( uintptr_t* )( register_struct_bytes + reg_offset );
-}
-
-const PEB* GetCurrentPeb() {
-#if defined( _WIN64 )
-  uintptr_t peb_addr = __readgsqword( 0x60 );
-#else
-  uintptr_t peb_addr = __readfsdword( 0x30 );
-#endif
-  return reinterpret_cast<const PEB*>( peb_addr );
 }
 
 template <typename T>

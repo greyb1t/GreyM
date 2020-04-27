@@ -1,6 +1,9 @@
 #pragma once
 #include <cstdint>
 
+#define VM_LOADER_SECTION_NAME ( ".dick" )
+#define VM_CODE_SECTION_NAME ".dick2"
+
 #define VM_FUNCTIONS_SECTION_NAME "vmfun"
 #define VM_INTERPRETER_STACK_ALLOCATION_SIZE_BYTES 200
 
@@ -22,6 +25,12 @@ constexpr uintptr_t DEFAULT_PE_BASE_ADDRESS = 0x10000000;
 constexpr uintptr_t DEFAULT_PE_BASE_ADDRESS = 0x400000;
 #endif
 #endif
+
+// The data at the beginning of the vm code section
+struct VmCodeSectionData {
+  char friendly_message[ 50 ];
+  IMAGE_DATA_DIRECTORY import_data_directory;
+};
 
 enum class VmOpcodes : uint32_t {
   // mov reg, 0x0
