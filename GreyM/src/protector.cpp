@@ -1601,6 +1601,25 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   //    new_pe, original_pe, interpreter_pe, original_pe_nt_headers,
   //    original_text_section_header, &context_saved );
 
+  // Randomize all section names except for the vm code
+  // section because we rely on it being that name in our tls callbacks
+  const auto nt = new_pe.GetNtHeaders();
+
+  for ( int i = 0; i < nt->FileHeader.NumberOfSections; ++i ) {
+    const auto section = &IMAGE_FIRST_SECTION( nt )[ i ];
+
+    // Because the name in the section header may not be null terminated
+    char buffer[ 8 + 1 ] = { 0 };
+
+    memcpy( buffer, section->Name, 8 );
+
+    bool is_vm_code_section = strcmp( buffer, VM_CODE_SECTION_NAME ) == 0;
+
+    if ( !is_vm_code_section ) {
+      strcpy( reinterpret_cast<char*>( section->Name ), "bruh" );
+    }
+  }
+
   stopwatch.Stop();
 
   printf( "Total Disassembled Instructions: %d\n",
