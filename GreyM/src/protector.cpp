@@ -1401,25 +1401,37 @@ PortableExecutable VirtualizeMyTlsCallbacks(
 
 void RemoveImports( PortableExecutable* pe,
                     ProtectorContext* context,
-                    VmCodeSectionData* vm_code_section_data ) {
-  // Extra: Encrypt the whole import directory to avoid someone from seeing the dll and function names in strings?
-
-  // Instead of making it complicated simply:
-  //  Save the encrypted import data directory in the vm code section
-  //  Remove the import table info from header
-  //  Decrypt the address in the TLS callback
-  //  Fix the imports manually
+                    uintptr_t vm_code_section_data_offset ) {
+  // Make the import directory point to zeroed data
+  // Why? Because removing it completely, for some reason, makes it so
+  // when protecting a DLL, the TLS callback are never called.
 
   const auto nt_headers = pe->GetNtHeaders();
   const auto import_data_directory =
       &nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT ];
 
-  vm_code_section_data->import_data_directory = *import_data_directory;
+  import_data_directory->Size = 8;
 
-  // https://github.com/corkami/docs/blob/master/PE/PE.md
+  // Set to the offset of the vm code init data, we will later
+  // fixup it to add the virtual address of the vm code section
+  // It will point to the zeroed data in the beginning of VmCodeSectionData
+  import_data_directory->VirtualAddress = vm_code_section_data_offset;
 
-  import_data_directory->Size = 0;
-  import_data_directory->VirtualAddress = 0;
+  // Fixup the VirtualAddress field in the import data directory
+  // to add the the virtualized code section RVA. That is were the
+  // struct VmCodeSectionData is located
+  Fixup import_data_va_fixup;
+  import_data_va_fixup.desc.offset_type = OffsetRelativeTo::Beginning;
+  import_data_va_fixup.desc.operation =
+      FixupOperation::AddVirtualizedCodeSectionVirtualAddress;
+  import_data_va_fixup.desc.size =
+      sizeof( import_data_directory->VirtualAddress );
+  import_data_va_fixup.offset =
+      reinterpret_cast<uintptr_t>( import_data_directory ) -
+      reinterpret_cast<uintptr_t>( pe->GetPeImagePtr() ) +
+      offsetof( IMAGE_DATA_DIRECTORY, VirtualAddress );
+
+  context->fixup_context.fixups.push_back( import_data_va_fixup );
 
   const auto iat_data_directory =
       &nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IAT ];
@@ -1480,6 +1492,9 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   VmCodeSectionData vm_code_section_data;
 
+  memset( vm_code_section_data.zeroed_data_for_import_directory, 0,
+          sizeof( vm_code_section_data.zeroed_data_for_import_directory ) );
+
   vm_code_section_data.import_count =
       static_cast<uint32_t>( original_pe.GetImports().size() );
 
@@ -1494,25 +1509,20 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   strcpy( vm_code_section_data.friendly_message,
           "bruh, you're not supposed to be here! yo momma fat" );
 
-  // I had issues with the loader not calling the TLS callbacks in a protected DLL
-  // I read on MSDN the following statement:
-  //    Statically declared TLS data objects can be used only in statically loaded image files.
-  //    This fact makes it unreliable to use static TLS data in a DLL unless you know that
-  //    the DLL, or anything statically linked with it, will never be loaded dynamically
-  //    with the LoadLibrary API function.
-  // I do not understand entierly, but that is possibly the issue.
-  // Therefore, we only remove the imports if it is an executable.
-#if DLL == FALSE
-  // Obfuscate the imports before adding tls callbacks because
-  // AddTlsCallbacks adds data to the vm code section.
-  // RemoveImports needs to be the first one to add data
-  RemoveImports( &original_pe, &context, &vm_code_section_data );
-#endif
+  const auto import_data_directory =
+      &original_pe_nt_headers.OptionalHeader
+           .DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT ];
+
+  // Copy the data directory for our own import fixer in the TLS callbacks
+  vm_code_section_data.import_data_directory = *import_data_directory;
 
   // Add the init data for the vm code section
-  context.virtualized_code_section.AppendCode(
-      vm_code_section_data,
-      original_pe_nt_headers.OptionalHeader.FileAlignment );
+  const auto vm_code_section_data_offset =
+      context.virtualized_code_section.AppendCode(
+          vm_code_section_data,
+          original_pe_nt_headers.OptionalHeader.FileAlignment );
+
+  RemoveImports( &original_pe, &context, vm_code_section_data_offset );
 
 #if ENABLE_TLS_CALLBACKS
   AddTlsCallbacks( interpreter_pe, &original_pe, &context );

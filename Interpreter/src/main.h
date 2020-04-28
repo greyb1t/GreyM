@@ -28,6 +28,9 @@ constexpr uintptr_t DEFAULT_PE_BASE_ADDRESS = 0x400000;
 
 // The data at the beginning of the vm code section
 struct VmCodeSectionData {
+  // A bunch of zeroed data for the import data directory to point to
+  uint8_t zeroed_data_for_import_directory[ sizeof( IMAGE_IMPORT_DESCRIPTOR ) ];
+
   char friendly_message[ 80 ];
 
   IMAGE_DATA_DIRECTORY import_data_directory;

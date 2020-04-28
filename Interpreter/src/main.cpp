@@ -320,7 +320,7 @@ void FixImports( uint8_t* dll_base_addr,
 #ifdef _WIN64
       // Write the encrypted address
       *reinterpret_cast<uint64_t*>( redirection_shellcode + 5 ) =
-          import_function_addr ^ xor_key;
+          import_function_address ^ xor_key;
 
       // Write the xor key
       *reinterpret_cast<uint32_t*>( redirection_shellcode + 15 ) = xor_key;
@@ -433,18 +433,6 @@ ApiAddresses InitializeApis( const Modules& modules ) {
   return apis;
 }
 
-bool HasRealImportDirectory( uint8_t* base ) {
-  const auto nt_headers = GetNtHeaders( base );
-
-  const auto real_import_data_directory =
-      &nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT ];
-
-  const bool has_real_import_directory =
-      real_import_data_directory->VirtualAddress != 0;
-
-  return has_real_import_directory;
-}
-
 __declspec( dllexport ) void NTAPI
     FirstTlsCallback( PVOID dll_base, DWORD reason, PVOID reserved ) {
   // TODO: use fiber to execute the all the code
@@ -470,7 +458,6 @@ __declspec( dllexport ) void NTAPI
 #if ENABLE_TLS_CALLBACKS
       FixNextCorruptedTlsCallback( dll_base );
 #endif
-
       const auto modules = GetModules();
       const auto apis = InitializeApis( modules );
 
@@ -491,13 +478,8 @@ __declspec( dllexport ) void NTAPI
           vm_code_section_data->import_data_directory;
 
       if ( import_data_directory.Size > 0 ) {
-        // If the protector never removed the original import directory,
-        // then it must not be supported. E.g. for a DLL.
-        // If so, we never fix up the imports because the loader has done it.
-        if ( !HasRealImportDirectory( dll_base_ptr ) ) {
-          FixImports( dll_base_ptr, vm_code_section_data, import_data_directory,
-                      apis );
-        }
+        FixImports( dll_base_ptr, vm_code_section_data, import_data_directory,
+                    apis );
 
         // Remove it info in case someone dumps the PE
         vm_code_section_data->import_data_directory.Size = 0;
