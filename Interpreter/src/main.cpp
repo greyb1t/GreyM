@@ -30,17 +30,22 @@
 
 #pragma code_seg( VM_FUNCTIONS_SECTION_NAME )
 
-/*
-#if DLL
-__declspec( dllexport ) void NTAPI __declspec( dllexport ) BOOL WINAPI
-    EntryPoint( HINSTANCE instance, DWORD reason, LPVOID reserved ) {}
-#else
-__declspec( dllexport ) int WINAPI EntryPoint( HINSTANCE instance,
-                                               HINSTANCE prev_instance,
-                                               PWSTR cmdline,
-                                               int cmdshow ) {}
-#endif
-*/
+using LoadLibraryA_t = decltype( &LoadLibraryA );
+using GetProcAddress_t = decltype( &GetProcAddress );
+using VirtualProtect_t = decltype( &VirtualProtect );
+using VirtualAlloc_t = decltype( &VirtualAlloc );
+
+struct Modules {
+  uintptr_t ntdll;
+  uintptr_t kernel32;
+};
+
+struct ApiAddresses {
+  LoadLibraryA_t LoadLibraryA;
+  GetProcAddress_t GetProcAddress;
+  VirtualProtect_t VirtualProtect;
+  VirtualAlloc_t VirtualAlloc;
+};
 
 IMAGE_NT_HEADERS* GetNtHeaders( const PVOID base ) {
   auto dos_header = reinterpret_cast<IMAGE_DOS_HEADER*>( base );
@@ -156,6 +161,7 @@ void MemorySet( uint8_t* src, int size, uint8_t value ) {
     ++src;
   }
 }
+*/
 
 void MemoryCopy( uint8_t* src, uint8_t* dest, int size ) {
   for ( int i = 0; i < size; ++i ) {
@@ -165,7 +171,6 @@ void MemoryCopy( uint8_t* src, uint8_t* dest, int size ) {
     ++dest;
   }
 }
-*/
 
 uintptr_t GetModule( const uintptr_t module_name_hash ) {
   const auto peb = GetCurrentPeb();
@@ -222,10 +227,8 @@ uintptr_t GetExport( const uintptr_t module,
   return 0;
 }
 
-uintptr_t GetVmCodeSection( const PVOID base ) {
-  constexpr auto vm_code_section_name_hash =
-      HashWideString( TEXT( VM_CODE_SECTION_NAME ) );
-
+IMAGE_SECTION_HEADER* GetSectionHeaderByHash( const PVOID base,
+                                              const uintptr_t name_hash ) {
   const auto nt_headers = GetNtHeaders( base );
 
   const auto sections = IMAGE_FIRST_SECTION( nt_headers );
@@ -236,30 +239,203 @@ uintptr_t GetVmCodeSection( const PVOID base ) {
     const auto section_name_hash =
         HashString( reinterpret_cast<const char*>( section->Name ) );
 
-    if ( section_name_hash == vm_code_section_name_hash ) {
-      return reinterpret_cast<uintptr_t>( base ) + section->VirtualAddress;
+    if ( section_name_hash == name_hash ) {
+      return &sections[ i ];
     }
   }
 
   return 0;
 }
 
+uintptr_t GetVmCodeSection( const PVOID base ) {
+  constexpr auto vm_code_section_name_hash =
+      HashWideString( TEXT( VM_CODE_SECTION_NAME ) );
+
+  const auto sec_header =
+      GetSectionHeaderByHash( base, vm_code_section_name_hash );
+
+  return reinterpret_cast<uintptr_t>( base ) + sec_header->VirtualAddress;
+}
+
+void FixImports( uint8_t* dll_base_addr,
+                 VmCodeSectionData* vm_code_section_data,
+                 const IMAGE_DATA_DIRECTORY& import_data_directory,
+                 const ApiAddresses& apis ) {
+  const auto import_redirections_alloc_size =
+      vm_code_section_data->import_count *
+      sizeof( vm_code_section_data->import_redirect_shellcode );
+
+  int import_redirect_memory_offset = 0;
+
+  // Allocate the memory where we'll write all of the import redirections
+  const auto import_redirect_memory = reinterpret_cast<uintptr_t>(
+      apis.VirtualAlloc( NULL, import_redirections_alloc_size,
+                         MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE ) );
+
+  auto import_desc = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
+      dll_base_addr + import_data_directory.VirtualAddress );
+
+  // For each import descriptor
+  for ( ; import_desc->Name; ++import_desc ) {
+    const auto dll_name =
+        reinterpret_cast<const char*>( dll_base_addr + import_desc->Name );
+
+    const HINSTANCE dll_instance = apis.LoadLibraryA( dll_name );
+
+    // We read from the original thunk
+    auto original_thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(
+        dll_base_addr + import_desc->OriginalFirstThunk );
+
+    // We write to the first thunk
+    auto first_thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(
+        dll_base_addr + import_desc->FirstThunk );
+
+    // For each import thunk
+    for ( ; original_thunk->u1.AddressOfData;
+          ++original_thunk, ++first_thunk ) {
+      uintptr_t import_function_address = 0;
+
+      if ( IMAGE_SNAP_BY_ORDINAL( original_thunk->u1.Ordinal ) ) {
+        // TODO: Replace with my own get proc address, support ordinal tho
+        import_function_address =
+            reinterpret_cast<uintptr_t>( apis.GetProcAddress(
+                dll_instance, reinterpret_cast<char*>(
+                                  LOWORD( original_thunk->u1.Ordinal ) ) ) );
+      } else {
+        const auto import_by_name = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
+            dll_base_addr + original_thunk->u1.AddressOfData );
+
+        import_function_address = reinterpret_cast<uintptr_t>(
+            apis.GetProcAddress( dll_instance, import_by_name->Name ) );
+      }
+
+      auto redirection_shellcode =
+          vm_code_section_data->import_redirect_shellcode;
+
+      // TODO: Consider randomly generating/modifying one line in the shellcode to not only have a simple XOR
+      // TODO: Generate the xor key "randomly" using the import_redirect_memory_offset as a seed
+
+      const uint32_t xor_key = 0x1337;
+
+#ifdef _WIN64
+      // Write the encrypted address
+      *reinterpret_cast<uint64_t*>( redirection_shellcode + 5 ) =
+          import_function_addr ^ xor_key;
+
+      // Write the xor key
+      *reinterpret_cast<uint32_t*>( redirection_shellcode + 15 ) = xor_key;
+#else
+      // Write the encrypted address
+      *reinterpret_cast<uint32_t*>( redirection_shellcode + 4 ) =
+          import_function_address ^ xor_key;
+
+      // Write the xor key
+      *reinterpret_cast<uint32_t*>( redirection_shellcode + 9 ) = xor_key;
+#endif
+
+      const auto redirection_destination = reinterpret_cast<uint8_t*>(
+          import_redirect_memory + import_redirect_memory_offset );
+
+      // Write the redirection shellcode to the allocated location
+      MemoryCopy( redirection_shellcode, redirection_destination,
+                  sizeof( vm_code_section_data->import_redirect_shellcode ) );
+
+      DWORD old_protection;
+      apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
+                           PAGE_EXECUTE_READWRITE, &old_protection );
+
+      // Set the API call to the redirection shellcode
+      *reinterpret_cast<uintptr_t*>( first_thunk ) =
+          import_redirect_memory + import_redirect_memory_offset;
+
+      apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
+                           old_protection, &old_protection );
+
+      import_redirect_memory_offset +=
+          sizeof( vm_code_section_data->import_redirect_shellcode );
+    }
+  }
+}
+
+void AntiAttachDebugger( const Modules& module_addresses,
+                         const ApiAddresses& apis ) {
+  constexpr auto dbg_ui_remote_breakin_hash =
+      HashString( "DbgUiRemoteBreakin" );
+  const auto dbg_ui_remote_breakin =
+      GetExport( module_addresses.ntdll, dbg_ui_remote_breakin_hash );
+
+  constexpr auto dbg_break_point_hash = HashString( "DbgBreakPoint" );
+  const auto dbg_breakpoint =
+      GetExport( module_addresses.ntdll, dbg_break_point_hash );
+
+  DWORD old_protection;
+  apis.VirtualProtect( reinterpret_cast<LPVOID>( dbg_ui_remote_breakin ), 1,
+                       PAGE_READWRITE, &old_protection );
+
+  // ret
+  *reinterpret_cast<uint8_t*>( dbg_ui_remote_breakin ) = 0xC3;
+
+  apis.VirtualProtect( reinterpret_cast<LPVOID>( dbg_ui_remote_breakin ), 1,
+                       old_protection, &old_protection );
+
+  apis.VirtualProtect( reinterpret_cast<LPVOID>( dbg_breakpoint ), 1,
+                       PAGE_READWRITE, &old_protection );
+
+  // ret
+  *reinterpret_cast<uint8_t*>( dbg_breakpoint ) = 0xC3;
+
+  apis.VirtualProtect( reinterpret_cast<LPVOID>( dbg_breakpoint ), 1,
+                       old_protection, &old_protection );
+}
+
+Modules GetModules() {
+  constexpr auto ntdll_hash = HashWideString( TEXT( "ntdll.dll" ) );
+  const auto ntdll = GetModule( ntdll_hash );
+
+  constexpr auto kernel32_hash = HashWideString( TEXT( "kernel32.dll" ) );
+  const auto kernel32 = GetModule( kernel32_hash );
+
+  Modules module_addresses;
+
+  module_addresses.kernel32 = kernel32;
+  module_addresses.ntdll = ntdll;
+
+  return module_addresses;
+}
+
+ApiAddresses InitializeApis( const Modules& modules ) {
+  const auto kernel32 = modules.kernel32;
+  const auto ntdll = modules.ntdll;
+
+  constexpr auto load_library_a_hash = HashString( "LoadLibraryA" );
+  const auto load_library_a = reinterpret_cast<decltype( &LoadLibraryA )>(
+      GetExport( kernel32, load_library_a_hash ) );
+
+  constexpr auto get_proc_address_hash = HashString( "GetProcAddress" );
+  const auto get_proc_address = reinterpret_cast<decltype( &GetProcAddress )>(
+      GetExport( kernel32, get_proc_address_hash ) );
+
+  constexpr auto virtual_protect_hash = HashString( "VirtualProtect" );
+  const auto virtual_protect = reinterpret_cast<decltype( &VirtualProtect )>(
+      GetExport( kernel32, virtual_protect_hash ) );
+
+  constexpr auto virtual_alloc_hash = HashString( "VirtualAlloc" );
+  const auto virtual_alloc = reinterpret_cast<decltype( &VirtualAlloc )>(
+      GetExport( kernel32, virtual_alloc_hash ) );
+
+  ApiAddresses apis;
+
+  apis.GetProcAddress = get_proc_address;
+  apis.LoadLibraryA = load_library_a;
+  apis.VirtualProtect = virtual_protect;
+  apis.VirtualAlloc = virtual_alloc;
+
+  return apis;
+}
+
 __declspec( dllexport ) void NTAPI
     FirstTlsCallback( PVOID dll_base, DWORD reason, PVOID reserved ) {
   // TODO: use fiber to execute the all the code
-
-  /*
-  CONTINUE BY DOING THE BELOW:
-
-    Completetly remove import table from PE in protector
-
-    Import all things manually in the TLS callback.
-
-    Store the my own import data inside the resource.
-    Encrypt the resources.
-
-
-  */
 
   /*
     Remove the TLS callback immediately after they are called, in themselves
@@ -279,25 +455,10 @@ __declspec( dllexport ) void NTAPI
 
   switch ( reason ) {
     case DLL_PROCESS_ATTACH: {
-      constexpr auto user32_hash = HashWideString( TEXT( "user32.dll" ) );
-      const auto user32 = GetModule( user32_hash );
+      const auto modules = GetModules();
+      const auto apis = InitializeApis( modules );
 
-      constexpr auto kernel32_hash = HashWideString( TEXT( "kernel32.dll" ) );
-      const auto kernel32 = GetModule( kernel32_hash );
-
-      constexpr auto load_library_a_hash = HashString( "LoadLibraryA" );
-      const auto load_library_a = reinterpret_cast<decltype( &LoadLibraryA )>(
-          GetExport( kernel32, load_library_a_hash ) );
-
-      constexpr auto get_proc_address_hash = HashString( "GetProcAddress" );
-      const auto get_proc_address =
-          reinterpret_cast<decltype( &GetProcAddress )>(
-              GetExport( kernel32, get_proc_address_hash ) );
-
-      constexpr auto virtual_protect_hash = HashString( "VirtualProtect" );
-      const auto virtual_protect =
-          reinterpret_cast<decltype( &VirtualProtect )>(
-              GetExport( kernel32, virtual_protect_hash ) );
+      AntiAttachDebugger( modules, apis );
 
       const uintptr_t vm_code_section_addr = GetVmCodeSection( dll_base );
 
@@ -308,58 +469,15 @@ __declspec( dllexport ) void NTAPI
       auto vm_code_section_data =
           reinterpret_cast<VmCodeSectionData*>( vm_code_section_addr );
 
-      const auto dll_base_addr = reinterpret_cast<uint8_t*>( dll_base );
+      const auto dll_base_ptr = reinterpret_cast<uint8_t*>( dll_base );
 
       const auto import_data_directory =
           vm_code_section_data->import_data_directory;
 
       if ( import_data_directory.Size > 0 ) {
-        const IMAGE_IMPORT_DESCRIPTOR* import_desc =
-            reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
-                dll_base_addr + import_data_directory.VirtualAddress );
+        FixImports( dll_base_ptr, vm_code_section_data, import_data_directory,
+                    apis );
 
-        // For each import descriptor
-        for ( auto import_desc = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
-                  dll_base_addr + import_data_directory.VirtualAddress );
-              import_desc->Name; ++import_desc ) {
-          const auto dll_name = reinterpret_cast<const char*>(
-              dll_base_addr + import_desc->Name );
-
-          const HINSTANCE dll_instance = load_library_a( dll_name );
-
-          auto original_thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(
-              dll_base_addr + import_desc->OriginalFirstThunk );
-          auto first_thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(
-              dll_base_addr + import_desc->FirstThunk );
-
-          // For each import thunk
-          for ( ; original_thunk->u1.AddressOfData;
-                ++original_thunk, ++first_thunk ) {
-            DWORD old_protection;
-            virtual_protect( first_thunk, 0x100, PAGE_EXECUTE_READWRITE,
-                             &old_protection );
-
-            if ( IMAGE_SNAP_BY_ORDINAL( original_thunk->u1.Ordinal ) ) {
-              // TODO: consider using LOWORD, read the documenttation of GetProcAddress for ordinal again
-              // TODO: Repalce with my own get proc address, support ordinal tho
-              *reinterpret_cast<uintptr_t*>( first_thunk ) =
-                  reinterpret_cast<uintptr_t>( get_proc_address(
-                      dll_instance, reinterpret_cast<char*>( LOWORD(
-                                        original_thunk->u1.Ordinal ) ) ) );
-            } else {
-              const auto import = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
-                  dll_base_addr + original_thunk->u1.AddressOfData );
-              *reinterpret_cast<uintptr_t*>( first_thunk ) =
-                  reinterpret_cast<uintptr_t>(
-                      get_proc_address( dll_instance, import->Name ) );
-            }
-
-            virtual_protect( first_thunk, 0x100, old_protection,
-                             &old_protection );
-          }
-        }
-
-        // NEED WRITE ACCESS
         // Remove it info in case someone dumps the PE
         vm_code_section_data->import_data_directory.Size = 0;
         vm_code_section_data->import_data_directory.VirtualAddress = 0;
@@ -402,6 +520,18 @@ __declspec( dllexport ) void NTAPI
 
   auto nt_headers = GetNtHeaders( dll_base );
 }
+
+#if DLL
+__declspec( dllexport ) void NTAPI __declspec( dllexport ) BOOL WINAPI
+    EntryPoint( HINSTANCE instance, DWORD reason, LPVOID reserved ) {}
+#else
+__declspec( dllexport ) int WINAPI EntryPoint( HINSTANCE instance,
+                                               HINSTANCE prev_instance,
+                                               PWSTR cmdline,
+                                               int cmdshow ) {
+  return 1;
+}
+#endif
 
 void PushValueToRealStack( VmContext* vm_context, uintptr_t value ) {
   const auto current_registers_address =

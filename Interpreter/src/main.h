@@ -29,7 +29,96 @@ constexpr uintptr_t DEFAULT_PE_BASE_ADDRESS = 0x400000;
 // The data at the beginning of the vm code section
 struct VmCodeSectionData {
   char friendly_message[ 50 ];
+
   IMAGE_DATA_DIRECTORY import_data_directory;
+
+  // How many imports does the PE have
+  uint32_t import_count;
+
+#ifdef _WIN64
+  uint8_t import_redirect_shellcode[ 27 ] = {
+    // push rax
+    0x50,
+
+    // pushfq
+    0x9C,
+
+    // push rax
+    0x50,
+
+    // movabs rax, 64 bit value
+    0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+    // xor rax, 0
+    0x48, 0x35, 0x00, 0x00, 0x00, 0x00,
+
+    // mov [rsp + 0x10], rax
+    0x48, 0x89, 0x44, 0x24, 0x10,
+
+    // pop rax
+    0x58,
+
+    // popfq
+    0x9D,
+    // ret
+    0xC3
+  };
+#else
+  /*
+    // Allocate space for call destination
+	  // Why push eax? Because we cannot use sub because it changes eflags before we saved them
+	  push eax
+
+	  // Save eflags because we change them due to usage of xor
+	  pushfd
+
+	  // Save eax to use it
+	  push eax
+	
+	  mov eax, 0x1337 (encrypted addr)
+	
+	  xor eax, 0xDEAD (xor with key)
+	
+	  // Set the allocated stack to the call destination
+	  mov [esp + (8 or 16)], eax
+	
+	  // Restore the saved eax
+	  pop eax
+	
+	  // Restore the saved eflags
+	  popfd
+	
+	  // Jump to call destination
+	  ret
+  */
+  uint8_t import_redirect_shellcode[ 20 ] = {
+    // push eax
+    0x50,
+
+    // pushfd
+    0x9C,
+
+    // push eax
+    0x50,
+
+    // mov eax, 0x1337
+    0xB8, 0x37, 0x13, 0x00, 0x00,
+
+    // xor eax, 0
+    0x35, 0x00, 0x00, 0x00, 0x00,
+
+    // mov [esp + 8], eax
+    0x89, 0x44, 0x24, 0x08,
+
+    // pop eax
+    0x58,
+
+    // popfd
+    0x9D,
+    // ret
+    0xC3
+  };
+#endif
 };
 
 enum class VmOpcodes : uint32_t {

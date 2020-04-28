@@ -1474,10 +1474,12 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   // Add write access because we edit the callback list in the FirstTlsCallback()
   context.virtualized_code_section = section::CreateEmptySection(
       VM_CODE_SECTION_NAME, IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_DISCARDABLE |
-                                IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE
-      /*IMAGE_SCN_CNT_INITIALIZED_DATA */ );
+                                IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE );
 
   VmCodeSectionData vm_code_section_data;
+
+  vm_code_section_data.import_count =
+      static_cast<uint32_t>( original_pe.GetImports().size() );
 
   // Fill with random data for fun
   for ( int i = 0;
