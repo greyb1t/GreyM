@@ -309,6 +309,7 @@ void FixImports( uint8_t* dll_base_addr,
             apis.GetProcAddress( dll_instance, import_by_name->Name ) );
       }
 
+#if ENABLE_API_REDIRECTION
       auto redirection_shellcode =
           vm_code_section_data->import_redirect_shellcode;
 
@@ -353,6 +354,17 @@ void FixImports( uint8_t* dll_base_addr,
 
       import_redirect_memory_offset +=
           sizeof( vm_code_section_data->import_redirect_shellcode );
+#else
+      DWORD old_protection;
+      apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
+                           PAGE_EXECUTE_READWRITE, &old_protection );
+
+      // Set the API call to the redirection shellcode
+      *reinterpret_cast<uintptr_t*>( first_thunk ) = import_function_address;
+
+      apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
+                           old_protection, &old_protection );
+#endif
     }
   }
 }
