@@ -130,6 +130,8 @@ PortableExecutable::PortableExecutable( const std::vector<uint8_t>& pe_data )
 
 PortableExecutable::PortableExecutable( const PortableExecutable& rhs )
     : dos_headers_( nullptr ), nt_headers_( nullptr ) {
+  *this = rhs;
+  /*
   pe_data_ = rhs.pe_data_;
 
   const auto pe_data_ptr = &pe_data_[ 0 ];
@@ -137,6 +139,20 @@ PortableExecutable::PortableExecutable( const PortableExecutable& rhs )
   dos_headers_ = reinterpret_cast<IMAGE_DOS_HEADER*>( pe_data_ptr );
 
   nt_headers_ = peutils::GetNtHeaders( pe_data_ptr );
+  */
+}
+
+PortableExecutable& PortableExecutable::operator=(
+    const PortableExecutable& rhs ) {
+  pe_data_ = rhs.pe_data_;
+
+  const auto pe_data_ptr = &pe_data_[ 0 ];
+
+  dos_headers_ = reinterpret_cast<IMAGE_DOS_HEADER*>( pe_data_ptr );
+
+  nt_headers_ = peutils::GetNtHeaders( pe_data_ptr );
+
+  return *this;
 }
 
 bool PortableExecutable::IsValid() const {

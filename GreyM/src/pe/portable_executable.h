@@ -49,6 +49,9 @@ class PortableExecutable {
   // Copy constructor
   PortableExecutable( const PortableExecutable& rhs );
 
+  // Assignment constructior
+  PortableExecutable& operator=( const PortableExecutable& rhs );
+
   // Check whether or not the PE is valid throug the headers
   bool IsValid() const;
 
