@@ -433,6 +433,18 @@ ApiAddresses InitializeApis( const Modules& modules ) {
   return apis;
 }
 
+bool HasRealImportDirectory( uint8_t* base ) {
+  const auto nt_headers = GetNtHeaders( base );
+
+  const auto real_import_data_directory =
+      &nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT ];
+
+  const bool has_real_import_directory =
+      real_import_data_directory->VirtualAddress != 0;
+
+  return has_real_import_directory;
+}
+
 __declspec( dllexport ) void NTAPI
     FirstTlsCallback( PVOID dll_base, DWORD reason, PVOID reserved ) {
   // TODO: use fiber to execute the all the code
@@ -455,6 +467,10 @@ __declspec( dllexport ) void NTAPI
 
   switch ( reason ) {
     case DLL_PROCESS_ATTACH: {
+#if ENABLE_TLS_CALLBACKS
+      FixNextCorruptedTlsCallback( dll_base );
+#endif
+
       const auto modules = GetModules();
       const auto apis = InitializeApis( modules );
 
@@ -475,17 +491,18 @@ __declspec( dllexport ) void NTAPI
           vm_code_section_data->import_data_directory;
 
       if ( import_data_directory.Size > 0 ) {
-        FixImports( dll_base_ptr, vm_code_section_data, import_data_directory,
-                    apis );
+        // If the protector never removed the original import directory,
+        // then it must not be supported. E.g. for a DLL.
+        // If so, we never fix up the imports because the loader has done it.
+        if ( !HasRealImportDirectory( dll_base_ptr ) ) {
+          FixImports( dll_base_ptr, vm_code_section_data, import_data_directory,
+                      apis );
+        }
 
         // Remove it info in case someone dumps the PE
         vm_code_section_data->import_data_directory.Size = 0;
         vm_code_section_data->import_data_directory.VirtualAddress = 0;
       }
-
-#if ENABLE_TLS_CALLBACKS
-      FixNextCorruptedTlsCallback( dll_base );
-#endif
     } break;
     default:
       break;
@@ -522,8 +539,10 @@ __declspec( dllexport ) void NTAPI
 }
 
 #if DLL
+/*
 __declspec( dllexport ) void NTAPI __declspec( dllexport ) BOOL WINAPI
     EntryPoint( HINSTANCE instance, DWORD reason, LPVOID reserved ) {}
+*/
 #else
 __declspec( dllexport ) int WINAPI EntryPoint( HINSTANCE instance,
                                                HINSTANCE prev_instance,

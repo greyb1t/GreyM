@@ -1399,9 +1399,9 @@ PortableExecutable VirtualizeMyTlsCallbacks(
   return new_pe_result;
 }
 
-void ObfuscateImports( PortableExecutable* pe,
-                       ProtectorContext* context,
-                       VmCodeSectionData* vm_code_section_data ) {
+void RemoveImports( PortableExecutable* pe,
+                    ProtectorContext* context,
+                    VmCodeSectionData* vm_code_section_data ) {
   // Extra: Encrypt the whole import directory to avoid someone from seeing the dll and function names in strings?
 
   // Instead of making it complicated simply:
@@ -1415,6 +1415,8 @@ void ObfuscateImports( PortableExecutable* pe,
       &nt_headers->OptionalHeader.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT ];
 
   vm_code_section_data->import_data_directory = *import_data_directory;
+
+  // https://github.com/corkami/docs/blob/master/PE/PE.md
 
   import_data_directory->Size = 0;
   import_data_directory->VirtualAddress = 0;
@@ -1491,10 +1493,21 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   // Write the message for the reverse engineer'er
   strcpy( vm_code_section_data.friendly_message,
           "bruh, you're not supposed to be here! yo momma fat" );
+
+  // I had issues with the loader not calling the TLS callbacks in a protected DLL
+  // I read on MSDN the following statement:
+  //    Statically declared TLS data objects can be used only in statically loaded image files.
+  //    This fact makes it unreliable to use static TLS data in a DLL unless you know that
+  //    the DLL, or anything statically linked with it, will never be loaded dynamically
+  //    with the LoadLibrary API function.
+  // I do not understand entierly, but that is possibly the issue.
+  // Therefore, we only remove the imports if it is an executable.
+#if DLL == FALSE
   // Obfuscate the imports before adding tls callbacks because
   // AddTlsCallbacks adds data to the vm code section.
-  // ObfuscateImports needs to be the first one to add data
-  ObfuscateImports( &original_pe, &context, &vm_code_section_data );
+  // RemoveImports needs to be the first one to add data
+  RemoveImports( &original_pe, &context, &vm_code_section_data );
+#endif
 
   // Add the init data for the vm code section
   context.virtualized_code_section.AppendCode(
