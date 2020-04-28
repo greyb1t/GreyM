@@ -1490,8 +1490,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   // Write the message for the reverse engineer'er
   strcpy( vm_code_section_data.friendly_message,
-          "bruh, you're not supposed to be here!" );
-
+          "bruh, you're not supposed to be here! yo momma fat" );
   // Obfuscate the imports before adding tls callbacks because
   // AddTlsCallbacks adds data to the vm code section.
   // ObfuscateImports needs to be the first one to add data
