@@ -69,6 +69,7 @@ struct VirtualizerContext {
   uint32_t total_disassembled_instructions = 0;
   WhatToVirtualize what_to_virtualize;
   IMAGE_SECTION_HEADER vm_loader_section_header;
+  uintptr_t default_image_base;
 
   Section original_text_section_copy;
 };
@@ -184,7 +185,8 @@ uint32_t GetExportedFunctionOffsetRelativeToSection(
   return interpreter_offset_relative_to_section;
 }
 
-void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
+void AddTlsCallbacks( const VmCodeSectionData& vm_code_section_data,
+                      const PortableExecutable& interpreter_pe,
                       PortableExecutable* original_pe,
                       ProtectorContext* context ) {
   // Previously I completely re-created the TLS directory in every case.
@@ -198,6 +200,8 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
 
   auto original_tls_data_dir = &original_pe_headers->OptionalHeader
                                     .DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
+
+  const auto default_image_base = context->virtualizer_context.default_image_base;
 
   std::vector<uintptr_t> tls_callback_list;
 
@@ -230,7 +234,7 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
     */
 
     // Add the address of my own TLS callback
-    tls_callback_list.push_back( DEFAULT_PE_BASE_ADDRESS +
+    tls_callback_list.push_back( default_image_base +
                                  interpreter_tls_callback_offset );
 
     const auto interpreter_second_tls_callback_offset =
@@ -240,9 +244,10 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
     // Store the index of my TLS callback to be used later when adding a fixup for it
     const auto my_second_tls_callback_index = tls_callback_list.size();
 
-    // Add the address of my own TLS callback
-    tls_callback_list.push_back( ( /*DEFAULT_PE_BASE_ADDRESS + */
-                                   interpreter_second_tls_callback_offset ) );
+    // Add the address of my own 2nd TLS callback
+    tls_callback_list.push_back(
+        default_image_base + interpreter_second_tls_callback_offset +
+        vm_code_section_data.second_tls_callback_modifier );
 
     // Some padding in case I want to add more TLS callbacks later on
     tls_callback_list.push_back( 0 );
@@ -312,7 +317,7 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
     }
 
     original_tls_dir->AddressOfCallBacks =
-        DEFAULT_PE_BASE_ADDRESS + tls_callback_list_offset;
+        default_image_base + tls_callback_list_offset;
 
     const auto addr_of_callbacks_offset =
         tls_dir_file_offset +
@@ -354,7 +359,7 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
     assert( my_tls_callback_index == 0 );
 
     // Add the address of my own TLS callback
-    tls_callback_list.push_back( DEFAULT_PE_BASE_ADDRESS +
+    tls_callback_list.push_back( default_image_base +
                                  interpreter_tls_callback_offset );
 
     const auto interpreter_second_tls_callback_offset =
@@ -366,9 +371,10 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
 
     assert( my_second_tls_callback_index == 1 );
 
-    // Add the address of my own TLS callback
-    tls_callback_list.push_back( /*DEFAULT_PE_BASE_ADDRESS +*/
-                                 interpreter_second_tls_callback_offset );
+    // Add the address of my own 2nd TLS callback
+    tls_callback_list.push_back(
+        default_image_base + interpreter_second_tls_callback_offset +
+        vm_code_section_data.second_tls_callback_modifier );
 
     // Some padding in case I want to add more TLS callbacks later on
     tls_callback_list.push_back( 0 );
@@ -439,10 +445,10 @@ void AddTlsCallbacks( const PortableExecutable& interpreter_pe,
 
     IMAGE_TLS_DIRECTORY tls_directory = { 0 };
 
-    tls_directory.AddressOfIndex = DEFAULT_PE_BASE_ADDRESS + index_data_offset;
+    tls_directory.AddressOfIndex = default_image_base + index_data_offset;
 
     tls_directory.AddressOfCallBacks =
-        DEFAULT_PE_BASE_ADDRESS + tls_callback_list_offset;
+        default_image_base + tls_callback_list_offset;
 
     tls_directory.Characteristics = IMAGE_SCN_ALIGN_1BYTES;
 
@@ -1063,7 +1069,8 @@ void EachInstructionCallback( const cs_insn& instruction,
 
     const auto virtualized_shellcode = virtualizer::CreateVirtualizedShellcode(
         instruction, vm_opcode, vm_opcode_encyption_key,
-        relocations_rva_within_instruction );
+        relocations_rva_within_instruction,
+        context->virtualizer_context.default_image_base );
 
     const bool created_vm_code = virtualized_shellcode.GetBuffer().size() > 0;
 
@@ -1473,6 +1480,9 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   ProtectorContext context;
 
+  context.virtualizer_context.default_image_base =
+      original_pe_nt_headers.OptionalHeader.ImageBase;
+
   context.virtualizer_context.interpreter_function_offset =
       GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
                                                   "VmInterpreter" );
@@ -1491,6 +1501,9 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
                                 IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE );
 
   VmCodeSectionData vm_code_section_data;
+
+  // TODO: Add this as an option for the user
+  vm_code_section_data.redirect_imports = true;
 
   memset( vm_code_section_data.zeroed_data_for_import_directory, 0,
           sizeof( vm_code_section_data.zeroed_data_for_import_directory ) );
@@ -1525,7 +1538,8 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   RemoveImports( &original_pe, &context, vm_code_section_data_offset );
 
 #if ENABLE_TLS_CALLBACKS
-  AddTlsCallbacks( interpreter_pe, &original_pe, &context );
+  AddTlsCallbacks( vm_code_section_data, interpreter_pe, &original_pe,
+                   &context );
 #endif
 
   const auto original_text_section_header =

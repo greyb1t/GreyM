@@ -272,19 +272,32 @@ bool IsVirtualizeable( const cs_insn& instruction, const VmOpcodes vm_opcode ) {
   return vm_opcode != VmOpcodes::NO_OPCODE;
 }
 
-uintptr_t GetOperandMemoryValue( const cs_x86_op& operand ) {
-  return static_cast<uintptr_t>( operand.mem.disp );
+uintptr_t GetOperandMemoryValue( const cs_x86_op& operand,
+                                 const bool relocated,
+                                 const uintptr_t default_image_base ) {
+  if ( relocated ) {
+    return static_cast<uintptr_t>( operand.mem.disp ) - default_image_base;
+  } else {
+    return static_cast<uintptr_t>( operand.mem.disp );
+  }
 }
 
-uintptr_t GetOperandImmediateValue( const cs_x86_op& operand ) {
-  return static_cast<uintptr_t>( operand.imm );
+uintptr_t GetOperandImmediateValue( const cs_x86_op& operand,
+                                    const bool relocated,
+                                    const uintptr_t default_image_base ) {
+  if ( relocated ) {
+    return static_cast<uintptr_t>( operand.imm ) - default_image_base;
+  } else {
+    return static_cast<uintptr_t>( operand.imm );
+  }
 }
 
 Shellcode CreateVirtualizedShellcode(
     const cs_insn& instruction,
     const VmOpcodes vm_opcode,
     const uint32_t vm_opcode_encyption_key,
-    const std::vector<uintptr_t>& relocations_within_instruction ) {
+    const std::vector<uintptr_t>& relocations_within_instruction,
+    const uintptr_t default_image_base ) {
   Shellcode shellcode;
 
   assert( vm_opcode != VmOpcodes::NO_OPCODE );
@@ -368,7 +381,8 @@ Shellcode CreateVirtualizedShellcode(
 
       shellcode.AddValue( vm_reg );
 
-      const auto relative_data_addr = GetOperandMemoryValue( operands[ 1 ] );
+      const auto relative_data_addr =
+          GetOperandMemoryValue( operands[ 1 ], relocated_disp, default_image_base );
 
       const auto rip = instruction.address;
 
@@ -409,7 +423,8 @@ Shellcode CreateVirtualizedShellcode(
           abs_dest_call = relative_call_addr + 6 + rip
       */
 
-      const auto relative_call_addr = GetOperandMemoryValue( operands[ 0 ] );
+      const auto relative_call_addr =
+          GetOperandMemoryValue( operands[ 0 ], relocated_disp , default_image_base);
 
       const auto rip = instruction.address;
 
@@ -431,8 +446,8 @@ Shellcode CreateVirtualizedShellcode(
       assert( operands[ 0 ].size == 4 );
 #endif
 
-      const auto absolute_call_target_addr =
-          GetOperandMemoryValue( operands[ 0 ] );
+      const auto absolute_call_target_addr = GetOperandMemoryValue(
+          operands[ 0 ], relocated_disp, default_image_base );
 
       shellcode.AddValue<uintptr_t>( absolute_call_target_addr );
     } break;
@@ -440,8 +455,8 @@ Shellcode CreateVirtualizedShellcode(
     case VmOpcodes::CALL_IMMEDIATE: {
       assert( operands[ 0 ].type == x86_op_type::X86_OP_IMM );
 
-      const auto absolute_call_target_addr =
-          GetOperandImmediateValue( operands[ 0 ] );
+      const auto absolute_call_target_addr = GetOperandImmediateValue(
+          operands[ 0 ], relocated_imm, default_image_base );
 
       shellcode.AddValue<uintptr_t>( absolute_call_target_addr );
     } break;
@@ -449,8 +464,8 @@ Shellcode CreateVirtualizedShellcode(
     case VmOpcodes::JMP_IMM: {
       assert( operands[ 0 ].type == x86_op_type::X86_OP_IMM );
 
-      const auto absolute_jmp_target_addr =
-          GetOperandImmediateValue( operands[ 0 ] );
+      const auto absolute_jmp_target_addr = GetOperandImmediateValue(
+          operands[ 0 ], relocated_imm, default_image_base );
 
       shellcode.AddValue<uintptr_t>( absolute_jmp_target_addr );
     } break;
@@ -471,7 +486,8 @@ Shellcode CreateVirtualizedShellcode(
       // Push the register index to the virtualized code
       shellcode.AddValue( vm_reg );
 
-      shellcode.AddValue( GetOperandMemoryValue( operands[ 1 ] ) );
+      shellcode.AddValue( GetOperandMemoryValue( operands[ 1 ], relocated_disp,
+                                                 default_image_base ) );
     } break;
 
       // Example: mov ecx, dword ptr [eax + 0x43c140]
@@ -500,7 +516,8 @@ Shellcode CreateVirtualizedShellcode(
       if ( vm_reg_src.register_offset == -1 )
         return {};
 
-      const auto reg_src_disp = GetOperandMemoryValue( operand2 );
+      auto reg_src_disp =
+          GetOperandMemoryValue( operand2, relocated_disp, default_image_base );
 
       // Push the register offset to be changed to the virtualized code
       shellcode.AddValue( vm_reg_dest );
@@ -554,7 +571,8 @@ Shellcode CreateVirtualizedShellcode(
 
       // Push the register index to the virtualized code
       shellcode.AddValue( vm_reg );
-      shellcode.AddValue( GetOperandImmediateValue( operands[ 1 ] ) );
+      shellcode.AddValue( GetOperandImmediateValue(
+          operands[ 1 ], relocated_imm, default_image_base ) );
     } break;
 
       // Example: mov dword ptr [eax + 0x43c50c], ecx
@@ -585,7 +603,8 @@ Shellcode CreateVirtualizedShellcode(
       shellcode.AddValue( vm_reg_src );
 
       // Push the reg disp offset
-      shellcode.AddValue( GetOperandMemoryValue( dest_operand1 ) );
+      shellcode.AddValue( GetOperandMemoryValue( dest_operand1, relocated_disp,
+                                                 default_image_base ) );
     } break;
 
     case VmOpcodes::MOV_MEMORY_REG_OFFSET_IMM: {
@@ -607,11 +626,17 @@ Shellcode CreateVirtualizedShellcode(
       if ( vm_reg_dest.register_offset == -1 )
         return {};
 
+      // Both cannot be relocated at the same time, if so,
+      // modify the interpreter simply call if for both instead of else if
+      assert( !( relocated_imm && relocated_disp ) );
+
       shellcode.AddValue( vm_reg_dest );
 
-      shellcode.AddValue( GetOperandImmediateValue( src_operand2 ) );
+      shellcode.AddValue( GetOperandImmediateValue( src_operand2, relocated_imm,
+                                                    default_image_base ) );
 
-      shellcode.AddValue( GetOperandMemoryValue( dest_operand1 ) );
+      shellcode.AddValue( GetOperandMemoryValue( dest_operand1, relocated_disp,
+                                                 default_image_base ) );
 
 // On x86, we do not support operand sizes of 8
 #ifndef _WIN64
@@ -638,7 +663,8 @@ Shellcode CreateVirtualizedShellcode(
       assert( operands[ 0 ].size == 4 );
 #endif
 
-      shellcode.AddValue( GetOperandImmediateValue( operands[ 0 ] ) );
+      shellcode.AddValue( GetOperandImmediateValue(
+          operands[ 0 ], relocated_imm, default_image_base ) );
     } break;
 
     case VmOpcodes::PUSH_REGISTER_MEMORY_REG_OFFSET: {
@@ -664,7 +690,8 @@ Shellcode CreateVirtualizedShellcode(
       shellcode.AddValue( vm_reg_dest );
 
       // Push the reg disp offset
-      shellcode.AddValue( GetOperandMemoryValue( operand1 ) );
+      shellcode.AddValue( GetOperandMemoryValue( operand1, relocated_disp,
+                                                 default_image_base ) );
     } break;
 
     default:

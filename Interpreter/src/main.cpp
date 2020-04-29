@@ -54,7 +54,9 @@ IMAGE_NT_HEADERS* GetNtHeaders( const PVOID base ) {
   return nt_header;
 }
 
-void FixNextCorruptedTlsCallback( PVOID dll_base ) {
+void FixNextCorruptedTlsCallback(
+    PVOID dll_base,
+    const VmCodeSectionData& vm_code_section_data ) {
   const auto base_addr = reinterpret_cast<uintptr_t>( dll_base );
 
   auto nt_headers = GetNtHeaders( dll_base );
@@ -78,7 +80,7 @@ void FixNextCorruptedTlsCallback( PVOID dll_base ) {
 
     // TODO: Consider using a better solution to fix the corrupted tls callback
     // E.g. XOR the value to decrypt it
-    *last_tls_callback += DEFAULT_PE_BASE_ADDRESS;
+    *last_tls_callback -= vm_code_section_data.second_tls_callback_modifier;
   }
 }
 
@@ -309,62 +311,62 @@ void FixImports( uint8_t* dll_base_addr,
             apis.GetProcAddress( dll_instance, import_by_name->Name ) );
       }
 
-#if ENABLE_API_REDIRECTION
-      auto redirection_shellcode =
-          vm_code_section_data->import_redirect_shellcode;
+      if ( vm_code_section_data->redirect_imports ) {
+        auto redirection_shellcode =
+            vm_code_section_data->import_redirect_shellcode;
 
-      // TODO: Consider randomly generating/modifying one line in the shellcode to not only have a simple XOR
-      // TODO: Generate the xor key "randomly" using the import_redirect_memory_offset as a seed
+        // TODO: Consider randomly generating/modifying one line in the shellcode to not only have a simple XOR
+        // TODO: Generate the xor key "randomly" using the import_redirect_memory_offset as a seed
 
-      const uint32_t xor_key = 0x1337;
+        const uint32_t xor_key = 0x1337;
 
 #ifdef _WIN64
-      // Write the encrypted address
-      *reinterpret_cast<uint64_t*>( redirection_shellcode + 5 ) =
-          import_function_address ^ xor_key;
+        // Write the encrypted address
+        *reinterpret_cast<uint64_t*>( redirection_shellcode + 5 ) =
+            import_function_address ^ xor_key;
 
-      // Write the xor key
-      *reinterpret_cast<uint32_t*>( redirection_shellcode + 15 ) = xor_key;
+        // Write the xor key
+        *reinterpret_cast<uint32_t*>( redirection_shellcode + 15 ) = xor_key;
 #else
-      // Write the encrypted address
-      *reinterpret_cast<uint32_t*>( redirection_shellcode + 4 ) =
-          import_function_address ^ xor_key;
+        // Write the encrypted address
+        *reinterpret_cast<uint32_t*>( redirection_shellcode + 4 ) =
+            import_function_address ^ xor_key;
 
-      // Write the xor key
-      *reinterpret_cast<uint32_t*>( redirection_shellcode + 9 ) = xor_key;
+        // Write the xor key
+        *reinterpret_cast<uint32_t*>( redirection_shellcode + 9 ) = xor_key;
 #endif
 
-      const auto redirection_destination = reinterpret_cast<uint8_t*>(
-          import_redirect_memory + import_redirect_memory_offset );
+        const auto redirection_destination = reinterpret_cast<uint8_t*>(
+            import_redirect_memory + import_redirect_memory_offset );
 
-      // Write the redirection shellcode to the allocated location
-      MemoryCopy( redirection_shellcode, redirection_destination,
-                  sizeof( vm_code_section_data->import_redirect_shellcode ) );
+        // Write the redirection shellcode to the allocated location
+        MemoryCopy( redirection_shellcode, redirection_destination,
+                    sizeof( vm_code_section_data->import_redirect_shellcode ) );
 
-      DWORD old_protection;
-      apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
-                           PAGE_EXECUTE_READWRITE, &old_protection );
+        DWORD old_protection;
+        apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
+                             PAGE_EXECUTE_READWRITE, &old_protection );
 
-      // Set the API call to the redirection shellcode
-      *reinterpret_cast<uintptr_t*>( first_thunk ) =
-          import_redirect_memory + import_redirect_memory_offset;
+        // Set the API call to the redirection shellcode
+        *reinterpret_cast<uintptr_t*>( first_thunk ) =
+            import_redirect_memory + import_redirect_memory_offset;
 
-      apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
-                           old_protection, &old_protection );
+        apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
+                             old_protection, &old_protection );
 
-      import_redirect_memory_offset +=
-          sizeof( vm_code_section_data->import_redirect_shellcode );
-#else
-      DWORD old_protection;
-      apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
-                           PAGE_EXECUTE_READWRITE, &old_protection );
+        import_redirect_memory_offset +=
+            sizeof( vm_code_section_data->import_redirect_shellcode );
+      } else {
+        DWORD old_protection;
+        apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
+                             PAGE_EXECUTE_READWRITE, &old_protection );
 
-      // Set the API call to the redirection shellcode
-      *reinterpret_cast<uintptr_t*>( first_thunk ) = import_function_address;
+        // Set the API call to the redirection shellcode
+        *reinterpret_cast<uintptr_t*>( first_thunk ) = import_function_address;
 
-      apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
-                           old_protection, &old_protection );
-#endif
+        apis.VirtualProtect( first_thunk, sizeof( IMAGE_THUNK_DATA ),
+                             old_protection, &old_protection );
+      }
     }
   }
 }
@@ -467,9 +469,6 @@ __declspec( dllexport ) void NTAPI
 
   switch ( reason ) {
     case DLL_PROCESS_ATTACH: {
-#if ENABLE_TLS_CALLBACKS
-      FixNextCorruptedTlsCallback( dll_base );
-#endif
       const auto modules = GetModules();
       const auto apis = InitializeApis( modules );
 
@@ -483,6 +482,10 @@ __declspec( dllexport ) void NTAPI
 
       auto vm_code_section_data =
           reinterpret_cast<VmCodeSectionData*>( vm_code_section_addr );
+
+#if ENABLE_TLS_CALLBACKS
+      FixNextCorruptedTlsCallback( dll_base, *vm_code_section_data );
+#endif
 
       const auto dll_base_ptr = reinterpret_cast<uint8_t*>( dll_base );
 
@@ -531,20 +534,6 @@ __declspec( dllexport ) void NTAPI
 
   auto nt_headers = GetNtHeaders( dll_base );
 }
-
-#if DLL
-/*
-__declspec( dllexport ) void NTAPI __declspec( dllexport ) BOOL WINAPI
-    EntryPoint( HINSTANCE instance, DWORD reason, LPVOID reserved ) {}
-*/
-#else
-__declspec( dllexport ) int WINAPI EntryPoint( HINSTANCE instance,
-                                               HINSTANCE prev_instance,
-                                               PWSTR cmdline,
-                                               int cmdshow ) {
-  return 1;
-}
-#endif
 
 void PushValueToRealStack( VmContext* vm_context, uintptr_t value ) {
   const auto current_registers_address =
@@ -695,11 +684,6 @@ __declspec( dllexport ) int32_t
   // TODO: Find a better universal solution to get the image base address with
   // better performance that works for both exe and dll
 
-  // TODO: Instead of having a variable for the default pe base address
-  // (DEFAULT_PE_BASE_ADDRESS) Read it from the header after retreiving the
-  // image base and save it somewhere to be able to protect both EXE and DLL
-  // without recompilation
-
   // NOTE: Manualmapping does not work because the module is not linked in the
   // PEB
   // I can fix by on entrypoint using __stdcall DLLMAIN parameters and use
@@ -748,8 +732,7 @@ __declspec( dllexport ) int32_t
       auto reg_src_disp = ReadValue<uintptr_t>( &code );
 
       if ( relocated_disp ) {
-        reg_src_disp =
-            reg_src_disp - DEFAULT_PE_BASE_ADDRESS + image_base_address;
+        reg_src_disp = reg_src_disp + image_base_address;
       }
 
       const auto reg_src_value =
@@ -767,8 +750,7 @@ __declspec( dllexport ) int32_t
       auto value_src_addr = ReadValue<uintptr_t>( &code );
 
       if ( relocated_disp ) {
-        value_src_addr =
-            value_src_addr - DEFAULT_PE_BASE_ADDRESS + image_base_address;
+        value_src_addr = value_src_addr + image_base_address;
       }
 
       const auto value = *( uintptr_t* )( value_src_addr );
@@ -793,7 +775,7 @@ __declspec( dllexport ) int32_t
       auto value = ReadValue<uintptr_t>( &code );
 
       if ( relocated_imm ) {
-        value = value - DEFAULT_PE_BASE_ADDRESS + image_base_address;
+        value = value + image_base_address;
       }
 
       WriteSizedValueToRegister( vm_context, vm_reg_dest, value );
@@ -806,8 +788,7 @@ __declspec( dllexport ) int32_t
       auto reg_dest_disp = ReadValue<uintptr_t>( &code );
 
       if ( relocated_disp ) {
-        reg_dest_disp =
-            reg_dest_disp - DEFAULT_PE_BASE_ADDRESS + image_base_address;
+        reg_dest_disp = reg_dest_disp + image_base_address;
       }
 
       // NOTE: Might be issues within this handling due to the different sizes of the read/writes of registers
@@ -838,11 +819,9 @@ __declspec( dllexport ) int32_t
       auto reg_dest_disp = ReadValue<uintptr_t>( &code );
 
       if ( relocated_disp ) {
-        reg_dest_disp =
-            reg_dest_disp - DEFAULT_PE_BASE_ADDRESS + image_base_address;
+        reg_dest_disp = reg_dest_disp + image_base_address;
       } else if ( relocated_imm ) {
-        source_value =
-            source_value - DEFAULT_PE_BASE_ADDRESS + image_base_address;
+        source_value = source_value + image_base_address;
       }
 
       // NOTE: Might be issues within this handling due to the different sizes of the read/writes of registers
@@ -925,9 +904,8 @@ __declspec( dllexport ) int32_t
       auto absolute_call_target_addr_addr = ReadValue<uintptr_t>( &code );
 
       if ( relocated_disp ) {
-        absolute_call_target_addr_addr = absolute_call_target_addr_addr -
-                                         DEFAULT_PE_BASE_ADDRESS +
-                                         image_base_address;
+        absolute_call_target_addr_addr =
+            absolute_call_target_addr_addr + image_base_address;
       }
 
       uintptr_t absolute_call_target_addr =
@@ -948,7 +926,6 @@ __declspec( dllexport ) int32_t
       auto absolute_call_target_addr = ReadValue<uintptr_t>( &code );
 
       // add the image base
-      // absolute_call_target_addr += DEFAULT_PE_BASE_ADDRESS;
       absolute_call_target_addr += image_base_address;
 
       // Push a value that the loader prolog will use
@@ -964,8 +941,7 @@ __declspec( dllexport ) int32_t
       auto pushed_addr = ReadValue<uintptr_t>( &code );
 
       if ( relocated_imm ) {
-        pushed_addr =
-            pushed_addr - DEFAULT_PE_BASE_ADDRESS + image_base_address;
+        pushed_addr = pushed_addr + image_base_address;
       }
 
       PushValueToRealStack( vm_context, pushed_addr );
@@ -979,8 +955,7 @@ __declspec( dllexport ) int32_t
       auto reg_src_disp = ReadValue<uintptr_t>( &code );
 
       if ( relocated_disp ) {
-        reg_src_disp =
-            reg_src_disp - DEFAULT_PE_BASE_ADDRESS + image_base_address;
+        reg_src_disp = reg_src_disp + image_base_address;
       }
 
       // read the register value

@@ -7,25 +7,7 @@
 #define VM_FUNCTIONS_SECTION_NAME "vmfun"
 #define VM_INTERPRETER_STACK_ALLOCATION_SIZE_BYTES 200
 
-#define ENABLE_API_REDIRECTION FALSE
 #define ENABLE_TLS_CALLBACKS TRUE
-
-#define DLL 0
-
-// TODO: Read the default pe base address from the header instead of hard-coding
-#ifdef _WIN64
-#if DLL
-constexpr uintptr_t DEFAULT_PE_BASE_ADDRESS = 0x180000000;
-#else
-constexpr uintptr_t DEFAULT_PE_BASE_ADDRESS = 0x140000000;
-#endif
-#else
-#if DLL
-constexpr uintptr_t DEFAULT_PE_BASE_ADDRESS = 0x10000000;
-#else
-constexpr uintptr_t DEFAULT_PE_BASE_ADDRESS = 0x400000;
-#endif
-#endif
 
 // The data at the beginning of the vm code section
 struct VmCodeSectionData {
@@ -34,10 +16,16 @@ struct VmCodeSectionData {
 
   char friendly_message[ 80 ];
 
+  // TODO: make this random each time...
+  // The 2nd TLS callback we add has an invalid address, we fix
+  // it up in the first TLS callback using this value
+  uint32_t second_tls_callback_modifier = 1001;
+
   IMAGE_DATA_DIRECTORY import_data_directory;
 
   // How many imports does the PE have
   uint32_t import_count;
+  bool redirect_imports;
 
 #ifdef _WIN64
   uint8_t import_redirect_shellcode[ 27 ] = {

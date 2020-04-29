@@ -24,7 +24,7 @@ Shellcode CreateVirtualizedShellcode(
     const cs_insn& instruction,
     const VmOpcodes vm_opcode,
     const uint32_t vm_opcode_encyption_key,
-    const std::vector<uintptr_t>& relocations_within_instruction );
+    const std::vector<uintptr_t>& relocations_within_instruction, const uintptr_t default_image_base );
 
 Shellcode GetLoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
                                                 const VmOpcodes vm_opcode,
