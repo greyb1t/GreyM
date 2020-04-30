@@ -24,8 +24,6 @@
 #include <cstdint>
 #include <stdio.h>
 
-#include <intrin.h>
-
 #include "main.h"
 
 #pragma code_seg( VM_FUNCTIONS_SECTION_NAME )
@@ -504,13 +502,8 @@ __declspec( dllexport ) void NTAPI
     default:
       break;
   }
-  // TODO: Fix the imports in this tls callback, OR, add another dynamic TLS callback and fix the imports in that.
-  // Meaning we have to let the protector ruin the imports
 
   // Read here to ruin the imports: https://github.com/namreeb/dumpwow/blob/master/dll/dumper.cpp
-
-  // TODO: Consider removing the calling tls callback from the callback list when it has JUST entered the call
-  // The FIRST thing we do in the TLS callback, is remove itself from the TLS callback list
 
   // 1. Decrypt all strings
   // 2. Fix all imports
@@ -675,47 +668,6 @@ __declspec( dllexport ) int32_t
                         offsetof( VmContext, registers ) +
                         sizeof( vm_context->registers ) );
 
-  /*
-  const auto peb = GetCurrentPeb();
-
-#if DLL
-  const auto ret_addr = reinterpret_cast<uintptr_t>( _ReturnAddress() );
-
-  // TODO: Find a better universal solution to get the image base address with
-  // better performance that works for both exe and dll
-
-  // NOTE: Manualmapping does not work because the module is not linked in the
-  // PEB
-  // I can fix by on entrypoint using __stdcall DLLMAIN parameters and use
-  // HINSTANCE and save it. Because multiple threads can read from same location
-  // without issues.
-
-  uintptr_t image_base_address = 0;
-
-  const auto beginning_link = &peb->Ldr->InLoadOrderModuleList;
-
-  auto current_link = beginning_link->Flink;
-
-  do {
-    const auto entry = reinterpret_cast<PLDR_DATA_TABLE_ENTRY>( current_link );
-
-    const auto image_base = reinterpret_cast<uintptr_t>( entry->DllBase );
-
-    // If the return address is within the range of the module
-    if ( ret_addr >= image_base &&
-         ret_addr < ( image_base + entry->SizeOfImage ) ) {
-      image_base_address = image_base;
-      break;
-    }
-
-    current_link = current_link->Flink;
-  } while ( current_link != beginning_link && current_link );
-#else
-  const auto image_base_address =
-      reinterpret_cast<uintptr_t>( peb->ImageBaseAddress );
-#endif
-*/
-
   code += image_base_address;
 
   const auto vm_opcode = ReadValue<uint32_t>( &code ) ^ vm_opcode_encyption_key;
@@ -834,44 +786,6 @@ __declspec( dllexport ) int32_t
       WriteSizedValue( vm_reg_dest.register_size, dest_ptr, source_value );
     } break;
 
-    case VmOpcodes::SUB_REGISTER_IMMEDIATE: {
-      // UPDATE THE CODE BEFORE USING IT
-      /*
-      // Read the next 4 bytes as uint32_t
-      uint32_t reg_offset = *( uint32_t* )( code + i + 4 );
-      uint32_t value = *( uint32_t* )( code + i + 8 );
-
-      i += 8;
-
-      const uint32_t reg_dest_value =
-          *GetRegisterValuePointer( vm_context, reg_offset );
-
-      *GetRegisterValuePointer( vm_context, reg_offset ) =
-          reg_dest_value - value;
-      */
-    } break;
-
-    case VmOpcodes::SUB_REGISTER_MEMORY_REG_OFFSET: {
-      // UPDATE THE CODE BEFORE USING IT
-      /*
-      // Read the next 4 bytes as uint32_t
-      uint32_t reg_dest_offset = *( uint32_t* )( code + i + 4 );
-      uint32_t reg_src_offset = *( uint32_t* )( code + i + 8 );
-      int32_t reg_src_disp = *( int32_t* )( code + i + 12 );
-
-      uint32_t reg_src_value =
-          *GetRegisterValuePointer( vm_context, reg_src_offset );
-      uint32_t reg_src_value_with_disp = reg_src_value + reg_src_disp;
-
-      uint32_t sub_value = *( uint32_t* )reg_src_value_with_disp;
-
-      i += 12;
-
-      *GetRegisterValuePointer( vm_context, reg_dest_offset ) =
-          *GetRegisterValuePointer( vm_context, reg_dest_offset ) - sub_value;
-      */
-    } break;
-
     case VmOpcodes::LEA_REG_MEMORY_IMMEDIATE_RIP_RELATIVE: {
       const auto vm_reg_dest = ReadValue<VmRegister>( &code );
 
@@ -982,25 +896,6 @@ __declspec( dllexport ) int32_t
       // when exiting the vm (before jmp back), push return address
       // then jmp to
     } break;
-
-      // case VmOpcodes::JUMP_RELATIVE:
-      //{
-      //  // Check if the destination address is within the size of the
-      //  virtualized code
-
-      //  int8_t jump_offset = *(int8_t *)(code + i + 4);
-      //  int8_t jump_instruction_count = *(int8_t *)(code + i + 5);
-      //  uint32_t origin_address = *(uint32_t *)(code + i + 8);
-
-      //  if (jump_offset < 0) {
-      //    // it jumps backwards
-      //  }
-      //  else {
-      //    if (jump_offset) {
-
-      //    }
-      //  }
-      //} break;
 
     default:
       break;
