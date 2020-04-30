@@ -630,10 +630,14 @@ uintptr_t AppendRelocationBlock( const uintptr_t reloc_block_virtual_address,
 // of the relocation blocks to fixup the virtual address
 void AddRelocations(
     const FixupDescriptor& fixup_desc,
-    const std::vector<uintptr_t>& section_offsets_to_add_to_relocation_table,
+    std::vector<uintptr_t> section_offsets_to_add_to_relocation_table,
     IMAGE_NT_HEADERS* nt_headers,
     Section* reloc_section,
     std::vector<Fixup>* fixups ) {
+  // We need to sort them before adding them to the relocations, small to big
+  std::sort( section_offsets_to_add_to_relocation_table.begin(),
+             section_offsets_to_add_to_relocation_table.end() );
+
   if ( section_offsets_to_add_to_relocation_table.empty() ) {
     return;
   }
