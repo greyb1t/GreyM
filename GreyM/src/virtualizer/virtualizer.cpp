@@ -381,8 +381,8 @@ Shellcode CreateVirtualizedShellcode(
 
       shellcode.AddValue( vm_reg );
 
-      const auto relative_data_addr =
-          GetOperandMemoryValue( operands[ 1 ], relocated_disp, default_image_base );
+      const auto relative_data_addr = GetOperandMemoryValue(
+          operands[ 1 ], relocated_disp, default_image_base );
 
       const auto rip = instruction.address;
 
@@ -423,8 +423,8 @@ Shellcode CreateVirtualizedShellcode(
           abs_dest_call = relative_call_addr + 6 + rip
       */
 
-      const auto relative_call_addr =
-          GetOperandMemoryValue( operands[ 0 ], relocated_disp , default_image_base);
+      const auto relative_call_addr = GetOperandMemoryValue(
+          operands[ 0 ], relocated_disp, default_image_base );
 
       const auto rip = instruction.address;
 

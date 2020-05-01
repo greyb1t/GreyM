@@ -16,6 +16,8 @@ struct VmCodeSectionData {
 
   char friendly_message[ 80 ];
 
+  uint32_t real_entrypoint;
+
   // TODO: make this random each time...
   // The 2nd TLS callback we add has an invalid address, we fix
   // it up in the first TLS callback using this value

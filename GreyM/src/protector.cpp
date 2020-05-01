@@ -62,7 +62,7 @@ enum class WhatToVirtualize { TextSection, VmLoaderSection };
 
 struct VirtualizerContext {
   std::vector<uintptr_t> original_pe_relocation_rvas;
-  IMAGE_NT_HEADERS original_pe_nt_headers;
+  IMAGE_NT_HEADERS* original_pe_nt_headers;
   uint32_t interpreter_function_offset;
   IMAGE_SECTION_HEADER original_text_section_header;
   uint32_t total_virtualized_instructions = 0;
@@ -201,7 +201,8 @@ void AddTlsCallbacks( const VmCodeSectionData& vm_code_section_data,
   auto original_tls_data_dir = &original_pe_headers->OptionalHeader
                                     .DataDirectory[ IMAGE_DIRECTORY_ENTRY_TLS ];
 
-  const auto default_image_base = context->virtualizer_context.default_image_base;
+  const auto default_image_base =
+      context->virtualizer_context.default_image_base;
 
   std::vector<uintptr_t> tls_callback_list;
 
@@ -1082,14 +1083,14 @@ void EachInstructionCallback( const cs_insn& instruction,
       const auto virtualized_code_offset =
           context->virtualized_code_section.AppendCode(
               virtualized_shellcode.GetBuffer(),
-              original_pe_nt_headers.OptionalHeader.SectionAlignment,
-              original_pe_nt_headers.OptionalHeader.FileAlignment );
+              original_pe_nt_headers->OptionalHeader.SectionAlignment,
+              original_pe_nt_headers->OptionalHeader.FileAlignment );
 
       // generate loader shellcode for the virtualized shellcode
       auto vm_code_loader_shellcode =
           virtualizer::GetLoaderShellcodeForVirtualizedCode(
               instruction, vm_opcode,
-              original_pe_nt_headers.OptionalHeader.ImageBase );
+              original_pe_nt_headers->OptionalHeader.ImageBase );
 
       vm_code_loader_shellcode.ModifyVariable( VmOpcodeEncryptionKeyVariable,
                                                vm_opcode_encyption_key );
@@ -1132,8 +1133,8 @@ void EachInstructionCallback( const cs_insn& instruction,
       const auto loader_shellcode_offset =
           context->vm_loader_section.AppendCode(
               vm_code_loader_shellcode.GetBuffer(),
-              original_pe_nt_headers.OptionalHeader.SectionAlignment,
-              original_pe_nt_headers.OptionalHeader.FileAlignment );
+              original_pe_nt_headers->OptionalHeader.SectionAlignment,
+              original_pe_nt_headers->OptionalHeader.FileAlignment );
 
       ////////////////////////////
       // AddJmpBackAddrToFixup
@@ -1317,9 +1318,9 @@ void InvalidInstructionCallback( const uint64_t address,
 };
 
 // Takes in the almost finished PE and virtualizes the TLS callbacks that we added in the beginning
-PortableExecutable VirtualizeMyTlsCallbacks(
-    const PortableExecutable& new_pe,
-    const PortableExecutable& original_pe,
+PortableExecutable VirtualizeMyTlsCallbacksAndNewEntrypoint(
+    PortableExecutable& new_pe,
+    PortableExecutable& original_pe,
     const PortableExecutable& interpreter_pe,
     const IMAGE_NT_HEADERS& original_pe_nt_headers,
     const IMAGE_SECTION_HEADER& original_text_section_header,
@@ -1327,6 +1328,8 @@ PortableExecutable VirtualizeMyTlsCallbacks(
   // Since we are going to create a new PE based on the previously
   // created PE, we can re-use the same protector context
   // We only need to update one value inside of it
+
+  context->fixup_context.relocation_rvas_to_remove.clear();
 
   std::vector<uintptr_t> new_pe_relocation_rvas = GetRelocationRvas( new_pe );
 
@@ -1361,9 +1364,15 @@ PortableExecutable VirtualizeMyTlsCallbacks(
       GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
                                                   "SecondTlsCallback" );
 
-  assert( first_interpreter_tls_callback_offset ||
-          second_interpreter_tls_callback_offset );
+  const auto custom_entrypoint_interpreter_offset =
+      GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
+                                                  "BeforeEntrypoint" );
 
+  assert( first_interpreter_tls_callback_offset ||
+          second_interpreter_tls_callback_offset ||
+          custom_entrypoint_interpreter_offset );
+
+#if 1
   // Add my TLS callbacks as disassembly points for the disassembly engine
   {
     const auto first_tls_callback_offset =
@@ -1378,10 +1387,6 @@ PortableExecutable VirtualizeMyTlsCallbacks(
     disasm_point.code = new_pe.GetPeImagePtr() + first_tls_callback_offset;
     disasm_point.rva = first_tls_callback_rva;
     pe_disassembler.AddDisassemblyPoint( disasm_point );
-
-    // Set the disassembly point to the first TLS callback
-    pe_disassembler.SetDisassemblyPoint(
-        disasm_point, vm_loader_section_header->SizeOfRawData );
   }
   {
     const auto second_tls_callback_offset =
@@ -1397,6 +1402,26 @@ PortableExecutable VirtualizeMyTlsCallbacks(
     disasm_point.rva = second_tls_callback_rva;
     pe_disassembler.AddDisassemblyPoint( disasm_point );
   }
+#endif
+
+  {
+    // The new_pe has the newly added entrypoint, lets virtualize that as well
+    const auto new_entrypoint_rva =
+        new_pe.GetNtHeaders()->OptionalHeader.AddressOfEntryPoint;
+
+    // custom_entrypoint_offset
+    const auto new_entrypoint_offset =
+        new_pe.GetSectionHeaders().RvaToFileOffset( new_entrypoint_rva );
+
+    DisassemblyPoint disasm_point;
+    disasm_point.code = new_pe.GetPeImagePtr() + new_entrypoint_offset;
+    disasm_point.rva = new_entrypoint_rva;
+    pe_disassembler.AddDisassemblyPoint( disasm_point );
+
+    // Set the disassembly point to the first TLS callback
+    pe_disassembler.SetDisassemblyPoint(
+        disasm_point, vm_loader_section_header->SizeOfRawData );
+  }
 
   pe_disassembler.BeginDisassembling( EachInstructionCallback,
                                       OnInvalidInstructionCallback, context );
@@ -1406,6 +1431,15 @@ PortableExecutable VirtualizeMyTlsCallbacks(
 
   ApplyFixups( &new_pe_result, original_text_section_header,
                context->fixup_context.fixups );
+
+  // This time we remove it afterwards the whole PE is finished. Why?
+  // Because LOW chance to remove something by mistake because I am
+  // only virtualizing my own added stuff
+  // Also, cannot remove it before because e.g. I add my own
+  // relocation when I override my entrypoint.
+  // Scuffed as fock.
+  RemoveRelocations( context->fixup_context.relocation_rvas_to_remove,
+                     &new_pe_result );
 
   return new_pe_result;
 }
@@ -1453,17 +1487,196 @@ void RemoveImports( PortableExecutable* pe,
   iat_data_directory->VirtualAddress = 0;
 }
 
+const auto DefaultImageBaseVariable = TEXT( "DefaultImageBase" );
+const auto BeforeEntrypointFunctionVariable =
+    TEXT( "BeforeEntrypointFunction" );
+
+Shellcode CreateEntrypointShellcodeX64( const uint64_t default_image_base ) {
+  Shellcode shellcode;
+
+  // push rax
+  shellcode.AddByte( 0x50 );
+
+  // push rcx
+  shellcode.AddByte( 0x51 );
+
+  // push rax
+  shellcode.AddByte( 0x50 );
+
+  // mov rcx, 64 bit value
+  shellcode.AddBytes( { 0x48, 0xB9 } );
+  shellcode.AddVariable<uint64_t>( default_image_base,
+                                   DefaultImageBaseVariable );
+
+  // call
+  shellcode.AddByte( 0xE8 );
+  shellcode.AddVariable<uint32_t>( 0, BeforeEntrypointFunctionVariable );
+
+  // mov qword ptr ss:[rsp+0x10], rax
+  shellcode.AddBytes( { 0x48, 0x89, 0x44, 0x24, 0x10 } );
+
+  // pop rax
+  shellcode.AddByte( 0x58 );
+
+  // pop rcx
+  shellcode.AddByte( 0x59 );
+
+  // ret
+  shellcode.AddByte( 0xC3 );
+
+  return shellcode;
+}
+
+Shellcode CreateEntrypointShellcodeX86( const uint32_t default_image_base ) {
+  Shellcode shellcode;
+
+  // push eax
+  shellcode.AddByte( 0x50 );
+
+  // push eax
+  shellcode.AddByte( 0x50 );
+
+  // push image base
+  shellcode.AddByte( 0x68 );
+  shellcode.AddVariable<uint32_t>( default_image_base,
+                                   DefaultImageBaseVariable );
+
+  // call
+  shellcode.AddByte( 0xE8 );
+  shellcode.AddVariable<uint32_t>( 0, BeforeEntrypointFunctionVariable );
+
+  // mov dword ptr ss:[esp+0x4], eax
+  shellcode.AddBytes( { 0x89, 0x44, 0x24, 0x04 } );
+
+  // pop eax
+  shellcode.AddByte( 0x58 );
+
+  // ret
+  shellcode.AddByte( 0xC3 );
+
+  return shellcode;
+}
+
+void OverrideOriginalEntrypoint( const PortableExecutable& original_pe,
+                                 const PortableExecutable& interpreter_pe,
+                                 ProtectorContext* context ) {
+  /*
+    NOTE: We usually should not use CALL in shellcode because it changes 
+    E/RFLAGS in some cases when a task switch occurs, however, 
+    in this case it won't because it is an immediate call
+
+    x86 EP Assembly:
+      push eax 				        <-- Allocate stack for real_ep, but why push eax? Because sub esp, 4 changes E/RFLAGS
+      push eax				        <-- Save EAX
+      push imagebase			    <-- Push imagebase
+      call my_entrypoint		  <-- Call our entrypoint
+      mov [esp + 0x4], eax	  <-- Save the return value (OEP) on the stack we allocated
+      pop eax					        <-- Restore EAX
+      ret 					          <-- Jump to OEP
+
+    x64 EP Assembly:
+      push rax                    <-- Allocate stack for real_ep, but why push rax? Because sub esp, 8 changes E/RFLAGS
+      push rcx                    <-- Save RCX
+      push rax                    <-- Save RAX
+      mov rcx, imagebase          <-- Move imagebase into 1st argument
+      call my_entrypoint          <-- Call our entrypoint
+      mov [rsp + 0x10], rax       <-- Save the return value (OEP) on the stack we allocated
+      pop rax                     <-- Restore RAX
+      pop rcx                     <-- Restore RCX
+      ret                         <-- Jump to OEP
+  */
+
+  const auto new_ep_func_offset = GetExportedFunctionOffsetRelativeToSection(
+      interpreter_pe, "BeforeEntrypoint" );
+
+  const auto default_image_base =
+      context->virtualizer_context.original_pe_nt_headers->OptionalHeader
+          .ImageBase;
+
+#ifdef _WIN64
+  auto new_entrypoint_shellcode =
+      CreateEntrypointShellcodeX64( default_image_base );
+#else
+  auto new_entrypoint_shellcode =
+      CreateEntrypointShellcodeX86( default_image_base );
+#endif
+
+  const auto file_aligment =
+      context->virtualizer_context.original_pe_nt_headers->OptionalHeader
+          .FileAlignment;
+
+  // Call destination:
+  // AbsoluteDestination = Origin + CallValue + 5
+  // We want formula for CallValue (with some algebra rules YEET)
+  // CallValue = AbsoluteDestination - Origin - 5
+
+  const auto new_ep_vm_loader_offset =
+      context->vm_loader_section.GetCurrentOffset();
+
+  const auto before_ep_function_addr_shellcode_offset =
+      new_entrypoint_shellcode.GetNamedValueOffset(
+          BeforeEntrypointFunctionVariable );
+
+  const auto kCallInstructionSize = 5;
+  const auto absolute_destination = new_ep_func_offset;
+  const auto origin = new_ep_vm_loader_offset +
+                      ( before_ep_function_addr_shellcode_offset - 1 );
+
+  const auto new_call_dest =
+      absolute_destination - origin - kCallInstructionSize;
+
+  new_entrypoint_shellcode.ModifyVariable<uint32_t>(
+      BeforeEntrypointFunctionVariable, new_call_dest );
+
+  context->vm_loader_section.AppendCode( new_entrypoint_shellcode.GetBuffer(),
+                                         0, file_aligment );
+
+  context->virtualizer_context.original_pe_nt_headers->OptionalHeader
+      .AddressOfEntryPoint = new_ep_vm_loader_offset;
+
+  // Add the AddressOfEntrypoint in the pe header to the fixup
+  {
+    Fixup fixup;
+    fixup.desc.offset_type = OffsetRelativeTo::Beginning;
+    fixup.desc.operation = FixupOperation::AddVmLoaderSectionVirtualAddress;
+    fixup.desc.size =
+        sizeof( context->virtualizer_context.original_pe_nt_headers
+                    ->OptionalHeader.AddressOfEntryPoint );
+
+    const auto pe_beginning_addr =
+        reinterpret_cast<uintptr_t>( original_pe.GetPeImagePtr() );
+
+    const auto address_of_ep_addr = reinterpret_cast<uintptr_t>(
+        &context->virtualizer_context.original_pe_nt_headers->OptionalHeader
+             .AddressOfEntryPoint );
+
+    const auto address_of_ep_offset = address_of_ep_addr - pe_beginning_addr;
+
+    fixup.offset = address_of_ep_offset;
+
+    context->fixup_context.fixups.push_back( fixup );
+  }
+
+  const auto vm_loader_offset_ep_shellcode_imagebase_offset =
+      new_ep_vm_loader_offset +
+      new_entrypoint_shellcode.GetNamedValueOffset( DefaultImageBaseVariable );
+
+  // Add the "PUSH ImageBase" in the entrypoint shellcode to the relocation table
+  context->fixup_context.vm_section_offsets_to_add_to_relocation_table
+      .push_back( vm_loader_offset_ep_shellcode_imagebase_offset );
+}
+
 PortableExecutable Protect( PortableExecutable original_pe ) {
-  const auto original_pe_nt_headers = *original_pe.GetNtHeaders();
+  const auto original_pe_nt_headers = original_pe.GetNtHeaders();
 
 #ifndef _WIN64
-  if ( original_pe_nt_headers.OptionalHeader.Magic !=
+  if ( original_pe_nt_headers->OptionalHeader.Magic !=
        IMAGE_NT_OPTIONAL_HDR32_MAGIC ) {
     throw std::runtime_error(
         "Please use the x64 version of GreyM to protect this executable." );
   }
 #else
-  if ( original_pe_nt_headers.OptionalHeader.Magic !=
+  if ( original_pe_nt_headers->OptionalHeader.Magic !=
        IMAGE_NT_OPTIONAL_HDR64_MAGIC ) {
     throw std::runtime_error(
         "Please use the x86 version of GreyM to protect this executable." );
@@ -1484,8 +1697,10 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   ProtectorContext context;
 
+  context.virtualizer_context.original_pe_nt_headers = original_pe_nt_headers;
+
   context.virtualizer_context.default_image_base =
-      original_pe_nt_headers.OptionalHeader.ImageBase;
+      original_pe_nt_headers->OptionalHeader.ImageBase;
 
   context.virtualizer_context.interpreter_function_offset =
       GetExportedFunctionOffsetRelativeToSection( interpreter_pe,
@@ -1495,7 +1710,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   // that contains the address to locations. Those locatino are being relocated by default.
   // Therefore we need to relocate them as well in order to be able to use them.
   RelocateInterpreterPe( &interpreter_pe,
-                         original_pe_nt_headers.OptionalHeader.ImageBase );
+                         original_pe_nt_headers->OptionalHeader.ImageBase );
 
   context.vm_loader_section = CreateVmSection( interpreter_pe );
 
@@ -1505,6 +1720,9 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
                                 IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE );
 
   VmCodeSectionData vm_code_section_data;
+
+  vm_code_section_data.real_entrypoint =
+      original_pe_nt_headers->OptionalHeader.AddressOfEntryPoint;
 
   // TODO: Add this as an option for the user
   vm_code_section_data.redirect_imports = true;
@@ -1527,7 +1745,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
           "bruh, you're not supposed to be here! yo momma fat" );
 
   const auto import_data_directory =
-      &original_pe_nt_headers.OptionalHeader
+      &original_pe_nt_headers->OptionalHeader
            .DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT ];
 
   // Copy the data directory for our own import fixer in the TLS callbacks
@@ -1535,9 +1753,9 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   // Add the init data for the vm code section
   const auto vm_code_section_data_offset =
-      context.virtualized_code_section.AppendCode(
+      context.virtualized_code_section.AppendValue(
           vm_code_section_data,
-          original_pe_nt_headers.OptionalHeader.FileAlignment );
+          original_pe_nt_headers->OptionalHeader.FileAlignment );
 
   RemoveImports( &original_pe, &context, vm_code_section_data_offset );
 
@@ -1545,6 +1763,8 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   AddTlsCallbacks( vm_code_section_data, interpreter_pe, &original_pe,
                    &context );
 #endif
+
+  OverrideOriginalEntrypoint( original_pe, interpreter_pe, &context );
 
   const auto original_text_section_header =
       *original_pe.GetSectionHeaders().FromName( ".text" );
@@ -1572,8 +1792,6 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
   // Sort for quick binary search
   std::sort( context.virtualizer_context.original_pe_relocation_rvas.begin(),
              context.virtualizer_context.original_pe_relocation_rvas.end() );
-
-  context.virtualizer_context.original_pe_nt_headers = original_pe_nt_headers;
 
   context.virtualizer_context.what_to_virtualize =
       WhatToVirtualize::TextSection;
@@ -1639,12 +1857,13 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
 
   // Now virtualize the TLS callbacks that we added in the beginning and
   // create a new PE again with the virtualized TLS callbacks
-  //new_pe = VirtualizeMyTlsCallbacks(
-  //    new_pe, original_pe, interpreter_pe, original_pe_nt_headers,
-  //    original_text_section_header, &context_saved );
+  new_pe = VirtualizeMyTlsCallbacksAndNewEntrypoint(
+      new_pe, original_pe, interpreter_pe, *original_pe_nt_headers,
+      original_text_section_header, &context_saved );
 
-  // Randomize all section names except for the vm code
-  // section because we rely on it being that name in our tls callbacks
+// Randomize all section names except for the vm code
+// section because we rely on it being that name in our tls callbacks
+#if 1
   const auto nt = new_pe.GetNtHeaders();
 
   for ( int i = 0; i < nt->FileHeader.NumberOfSections; ++i ) {
@@ -1661,6 +1880,7 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
       strcpy( reinterpret_cast<char*>( section->Name ), "bruh" );
     }
   }
+#endif
 
   stopwatch.Stop();
 

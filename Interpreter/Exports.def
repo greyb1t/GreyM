@@ -5,3 +5,4 @@ EXPORTS
 	VmInterpreter
 	FirstTlsCallback
 	SecondTlsCallback
+	BeforeEntrypoint

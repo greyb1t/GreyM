@@ -44,7 +44,7 @@ class Section {
                         const uint32_t file_alignment );
 
   template <typename T>
-  uintptr_t AppendCode( const T& variable, const uint32_t file_alignment );
+  uintptr_t AppendValue( const T& variable, const uint32_t file_alignment );
 
   std::string GetName() const;
   void SetName( const std::string& name );
@@ -68,7 +68,7 @@ class Section {
 };
 
 template <typename T>
-uintptr_t Section::AppendCode( const T& variable,
+uintptr_t Section::AppendValue( const T& variable,
                                const uint32_t file_alignment ) {
   const auto buf = reinterpret_cast<const uint8_t*>( &variable );
 

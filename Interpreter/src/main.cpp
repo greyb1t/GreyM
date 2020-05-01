@@ -247,14 +247,17 @@ IMAGE_SECTION_HEADER* GetSectionHeaderByHash( const PVOID base,
   return 0;
 }
 
-uintptr_t GetVmCodeSection( const PVOID base ) {
+VmCodeSectionData* GetVmCodeSectionData( const PVOID base ) {
   constexpr auto vm_code_section_name_hash =
       HashWideString( TEXT( VM_CODE_SECTION_NAME ) );
 
   const auto sec_header =
       GetSectionHeaderByHash( base, vm_code_section_name_hash );
 
-  return reinterpret_cast<uintptr_t>( base ) + sec_header->VirtualAddress;
+  auto vm_code_sec_data_addr =
+      reinterpret_cast<uintptr_t>( base ) + sec_header->VirtualAddress;
+
+  return reinterpret_cast<VmCodeSectionData*>( vm_code_sec_data_addr );
 }
 
 void FixImports( uint8_t* dll_base_addr,
@@ -472,14 +475,7 @@ __declspec( dllexport ) void NTAPI
 
       AntiAttachDebugger( modules, apis );
 
-      const uintptr_t vm_code_section_addr = GetVmCodeSection( dll_base );
-
-      if ( !vm_code_section_addr ) {
-        return;
-      }
-
-      auto vm_code_section_data =
-          reinterpret_cast<VmCodeSectionData*>( vm_code_section_addr );
+      auto vm_code_section_data = GetVmCodeSectionData( dll_base );
 
 #if ENABLE_TLS_CALLBACKS
       FixNextCorruptedTlsCallback( dll_base, *vm_code_section_data );
@@ -526,6 +522,21 @@ __declspec( dllexport ) void NTAPI
   // simply find it by decompiling the code in IDA
 
   auto nt_headers = GetNtHeaders( dll_base );
+}
+
+#ifdef _WIN64
+__declspec( dllexport ) uintptr_t
+    __fastcall BeforeEntrypoint( uintptr_t dll_base )
+#else
+__declspec( dllexport ) uintptr_t
+    __stdcall BeforeEntrypoint( uintptr_t dll_base )
+#endif
+{
+  const auto vm_code_section_data =
+      GetVmCodeSectionData( reinterpret_cast<PVOID>( dll_base ) );
+
+  // Return the real entrypoint address for the entrypoint shellcode to call
+  return dll_base + vm_code_section_data->real_entrypoint;
 }
 
 void PushValueToRealStack( VmContext* vm_context, uintptr_t value ) {
