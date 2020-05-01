@@ -718,6 +718,36 @@ Shellcode GetX86LoaderShellcodeForVirtualizedCode(
 
       NOTE: The following code does not modify the E/RFLAGS as the previous iteration did
 
+      Before Interpreter
+        pushfd 
+        push eax
+        push ebx
+        push ecx
+        push edx
+        push ebp
+        push esi
+        push edi
+        sub esp,C8
+        push esp
+        add dword ptr ss:[esp],C8
+        sub esp,100
+        push test executable out.3F0000
+        push 58B1
+        push esp
+        push C993A
+        call test executable out.4394D0
+        add esp,100
+        pop esp
+        pop edi
+        pop esi
+        pop ebp
+        pop edx
+        pop ecx
+        pop ebx
+        pop eax
+        popfd 
+        jmp test executable out.43937B
+
       Call:
         We are pushing the destination address 2 times from the interpreter
         
@@ -735,60 +765,81 @@ Shellcode GetX86LoaderShellcodeForVirtualizedCode(
 
   Shellcode shellcode;
 
-  shellcode.Reserve( 100 );
+  //shellcode.Reserve( 100 );
 
-  shellcode.AddByte( 0x9C );  // pushfd
+  // pushfd
+  shellcode.AddByte( 0x9C );
+  // push eax
+  shellcode.AddByte( 0x50 );
+  // push ebx
+  shellcode.AddByte( 0x53 );
+  // push ecx
+  shellcode.AddByte( 0x51 );
+  // push edx
+  shellcode.AddByte( 0x52 );
+  // push ebp
+  shellcode.AddByte( 0x55 );
+  // push esi
+  shellcode.AddByte( 0x56 );
+  // push edi
+  shellcode.AddByte( 0x57 );
 
-  shellcode.AddByte( 0x50 );  // push eax
-  shellcode.AddByte( 0x53 );  // push ebx
-  shellcode.AddByte( 0x51 );  // push ecx
-  shellcode.AddByte( 0x52 );  // push edx
-  shellcode.AddByte( 0x55 );  // push ebp
-  shellcode.AddByte( 0x56 );  // push esi
-  shellcode.AddByte( 0x57 );  // push edi
+  // sub esp, 200 (MAX_PUSHES * sizeof(uint32_t))
+  shellcode.AddBytes( { 0x81, 0xEC, 0xC8, 0x00, 0x00, 0x00 } );
 
-  shellcode.AddBytes(
-      { 0x81, 0xEC, 0xC8, 0x00, 0x00,
-        0x00 } );  // sub esp, 200 (MAX_PUSHES * sizeof(uint32_t))
+  // push esp
+  shellcode.AddByte( 0x54 );
 
-  shellcode.AddByte( 0x54 );  // push esp
+  // add dword ptr [esp], 0x200
+  shellcode.AddBytes( { 0x81, 0x04, 0x24, 0xC8, 0x00, 0x00, 0x00 } );
 
-  shellcode.AddBytes( { 0x81, 0x04, 0x24, 0xC8, 0x00, 0x00,
-                        0x00 } );  // add dword ptr [esp], 0x200
-
-  // temp sub
+  // sub rsp, 0x100
   shellcode.AddBytes( { 0x81, 0xEC, 0x00, 0x01, 0x00, 0x00 } );
 
   // push the address to .vmvar section
-  shellcode.AddByte( 0x68 );  // push
+  // push
+  shellcode.AddByte( 0x68 );
   shellcode.AddVariable<uint32_t>( image_base, ImageBaseVariable );
 
   // push current eip
-  shellcode.AddByte( 0x68 );  // push
+  // push
+  shellcode.AddByte( 0x68 );
   shellcode.AddVariable<uint32_t>( 0, VmOpcodeEncryptionKeyVariable );
 
-  shellcode.AddByte( 0x54 );  // push esp
+  // push esp
+  shellcode.AddByte( 0x54 );
 
-  shellcode.AddByte( 0x68 );  // push
+  // push
+  shellcode.AddByte( 0x68 );
   shellcode.AddVariable( 0, VmCodeAddrVariable );
 
-  shellcode.AddByte( 0xE8 );  // call
+  // call
+  shellcode.AddByte( 0xE8 );
   shellcode.AddVariable( 0, VmCoreFunctionVariable );
 
-  // TEMP add
+  // add rsp, 0x100
   shellcode.AddBytes( { 0x81, 0xC4, 0x00, 0x01, 0x00, 0x00 } );
 
-  shellcode.AddByte( 0x5C );  // pop esp
+  // pop esp
+  shellcode.AddByte( 0x5C );
 
-  shellcode.AddByte( 0x5F );  // pop edi
-  shellcode.AddByte( 0x5E );  // pop esi
-  shellcode.AddByte( 0x5D );  // pop ebp
-  shellcode.AddByte( 0x5A );  // pop edx
-  shellcode.AddByte( 0x59 );  // pop ecx
-  shellcode.AddByte( 0x5B );  // pop ebx
-  shellcode.AddByte( 0x58 );  // pop eax
+  // pop edi
+  shellcode.AddByte( 0x5F );
+  // pop esi
+  shellcode.AddByte( 0x5E );
+  // pop ebp
+  shellcode.AddByte( 0x5D );
+  // pop edx
+  shellcode.AddByte( 0x5A );
+  // pop ecx
+  shellcode.AddByte( 0x59 );
+  // pop ebx
+  shellcode.AddByte( 0x5B );
+  // pop eax
+  shellcode.AddByte( 0x58 );
 
-  shellcode.AddByte( 0x9D );  // popfd
+  // popfd
+  shellcode.AddByte( 0x9D );
 
   if ( vm_opcode == VmOpcodes::CALL_IMMEDIATE ) {
     // push eax
@@ -837,7 +888,8 @@ Shellcode GetX86LoaderShellcodeForVirtualizedCode(
     shellcode.AddByte( 0xC3 );
   }
 
-  shellcode.AddByte( 0xE9 );  // jmp
+  // jmp
+  shellcode.AddByte( 0xE9 );
   shellcode.AddVariable( 0, OrigAddrVariable );
 
   return shellcode;
@@ -851,6 +903,76 @@ Shellcode GetX64LoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
       occurs that the wrong moment, the data outside the stack can become corrupt.
 
       NOTE: The following code does not modify the E/RFLAGS as the previous iteration did
+
+      Previous method to save XMM register (push xmm7):
+        sub rsp, 0x10
+        movdqu xmmword ptr ss:[rsp], xmm7
+
+      Before Interpreter:
+        pushfq 
+        push rax
+        push rbx
+        push rcx
+        push rdx
+        push rbp
+        push rsi
+        push rdi
+        sub rsp,80
+        movdqu xmmword ptr ss:[rsp+70],xmm7
+        movdqu xmmword ptr ss:[rsp+60],xmm6
+        movdqu xmmword ptr ss:[rsp+50],xmm5
+        movdqu xmmword ptr ss:[rsp+40],xmm4
+        movdqu xmmword ptr ss:[rsp+30],xmm3
+        movdqu xmmword ptr ss:[rsp+20],xmm2
+        movdqu xmmword ptr ss:[rsp+10],xmm1
+        movdqu xmmword ptr ss:[rsp],xmm0
+        push r8
+        push r9
+        push r10
+        push r11
+        push r12
+        push r13
+        push r14
+        push r15
+        sub rsp,C8                                <-- Allocate extra stack incase we push values onto the stack
+        push rsp
+        add dword ptr ss:[rsp],C8
+                                                      Allocate stack space for the function call, 
+        sub rsp,100                               <-- the stack space depends on how many arguments 
+                                                      the call has in this case it has 4, so i dont know
+        mov r9, Imagebase                         <-- 4th Argument Image Base
+        mov r8d,7A0F                              <-- 3rd Argument Xor Key
+        mov rdx,rsp                               <-- 2nd Argument RSP
+        mov rcx,437686A                           <-- 1st Argument VmCodeAddress
+        call VmInterpreter
+        add rsp,100                               <-- Free stack that was allocated before function call
+        pop rsp
+        pop r15
+        pop r14
+        pop r13
+        pop r12
+        pop r11
+        pop r10
+        pop r9
+        pop r8
+        movdqu xmm0,xmmword ptr ss:[rsp]
+        movdqu xmm1,xmmword ptr ss:[rsp+10]
+        movdqu xmm2,xmmword ptr ss:[rsp+20]
+        movdqu xmm3,xmmword ptr ss:[rsp+30]
+        movdqu xmm4,xmmword ptr ss:[rsp+40]
+        movdqu xmm5,xmmword ptr ss:[rsp+50]
+        movdqu xmm6,xmmword ptr ss:[rsp+60]
+        movdqu xmm7,xmmword ptr ss:[rsp+70]
+        add rsp,80
+        pop rdi
+        pop rsi
+        pop rbp
+        pop rdx
+        pop rcx
+        pop rbx
+        pop rax
+        popfq 
+        jmp test executable out.7FF71E5386AD      <-- Jump back to the next instruction of the original code
 
       Call:
         We are pushing the destination address 2 times from the interpreter
@@ -882,91 +1004,89 @@ Shellcode GetX64LoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
 
   Shellcode shellcode;
 
-  shellcode.Reserve( 100 );
+  // shellcode.Reserve( 100 );
 
-  shellcode.AddByte( 0x9C );  // pushfd
+  // pushfd
+  shellcode.AddByte( 0x9C );
+  // push rax
+  shellcode.AddByte( 0x50 );
+  // push rbx
+  shellcode.AddByte( 0x53 );
+  // push rcx
+  shellcode.AddByte( 0x51 );
+  // push rdx
+  shellcode.AddByte( 0x52 );
+  // push rbp
+  shellcode.AddByte( 0x55 );
+  // push rsi
+  shellcode.AddByte( 0x56 );
+  // push rdi
+  shellcode.AddByte( 0x57 );
 
-  shellcode.AddByte( 0x50 );  // push eax
-  shellcode.AddByte( 0x53 );  // push ebx
-  shellcode.AddByte( 0x51 );  // push ecx
-  shellcode.AddByte( 0x52 );  // push edx
-  shellcode.AddByte( 0x55 );  // push ebp
-  shellcode.AddByte( 0x56 );  // push esi
-  shellcode.AddByte( 0x57 );  // push edi
+  // sub rsp, 0x80
+  shellcode.AddBytes( { 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00 } );
 
-  // push xmm7
-  shellcode.AddBytes( { 0x48, 0x83, 0xEC, 0x10 } );  // sub rsp, 16
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x7F, 0x3C, 0x24 } );  // movdqu xmmword ptr ss:[rsp], xmm7
+  // movdqu xmmword ptr ss:[rsp+0x70], xmm7
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x7F, 0x7C, 0x24, 0x70 } );
 
-  // push xmm6
-  shellcode.AddBytes( { 0x48, 0x83, 0xEC, 0x10 } );  // sub rsp, 16
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x7F, 0x34, 0x24 } );  // movdqu xmmword ptr ss:[rsp], xmm6
+  // movdqu xmmword ptr ss:[rsp+0x60], xmm6
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x7F, 0x74, 0x24, 0x60 } );
 
-  // push xmm5
-  shellcode.AddBytes( { 0x48, 0x83, 0xEC, 0x10 } );  // sub rsp, 16
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x7F, 0x2C, 0x24 } );  // movdqu xmmword ptr ss:[rsp], xmm5
+  // movdqu xmmword ptr ss:[rsp+0x50], xmm5
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x7F, 0x6C, 0x24, 0x50 } );
 
-  // push xmm4
-  shellcode.AddBytes( { 0x48, 0x83, 0xEC, 0x10 } );  // sub rsp, 16
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x7F, 0x24, 0x24 } );  // movdqu xmmword ptr ss:[rsp], xmm4
+  // movdqu xmmword ptr ss:[rsp+0x40], xmm4
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x7F, 0x64, 0x24, 0x40 } );
 
-  // push xmm3
-  shellcode.AddBytes( { 0x48, 0x83, 0xEC, 0x10 } );  // sub rsp, 16
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x7F, 0x1C, 0x24 } );  // movdqu xmmword ptr ss:[rsp], xmm3
+  // movdqu xmmword ptr ss:[rsp+0x30], xmm3
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x7F, 0x5C, 0x24, 0x30 } );
 
-  // push xmm2
-  shellcode.AddBytes( { 0x48, 0x83, 0xEC, 0x10 } );  // sub rsp, 16
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x7F, 0x14, 0x24 } );  // movdqu xmmword ptr ss:[rsp], xmm2
+  // movdqu xmmword ptr ss:[rsp+0x20], xmm2
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x7F, 0x54, 0x24, 0x20 } );
 
-  // push xmm1
-  shellcode.AddBytes( { 0x48, 0x83, 0xEC, 0x10 } );  // sub rsp, 16
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x7F, 0x0C, 0x24 } );  // movdqu xmmword ptr ss:[rsp], xmm1
+  // movdqu xmmword ptr ss:[rsp+0x10], xmm1
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x7F, 0x4C, 0x24, 0x10 } );
 
-  // push xmm0
-  shellcode.AddBytes( { 0x48, 0x83, 0xEC, 0x10 } );  // sub rsp, 16
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x7F, 0x04, 0x24 } );  // movdqu xmmword ptr ss:[rsp], xmm0
+  // movdqu xmmword ptr ss:[rsp], xmm0
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x7F, 0x04, 0x24 } );
 
-  shellcode.AddBytes( { 0x41, 0x50 } );  // push r8
-  shellcode.AddBytes( { 0x41, 0x51 } );  // push r9
-  shellcode.AddBytes( { 0x41, 0x52 } );  // push r10
-  shellcode.AddBytes( { 0x41, 0x53 } );  // push r11
-  shellcode.AddBytes( { 0x41, 0x54 } );  // push r12
-  shellcode.AddBytes( { 0x41, 0x55 } );  // push r13
-  shellcode.AddBytes( { 0x41, 0x56 } );  // push r14
-  shellcode.AddBytes( { 0x41, 0x57 } );  // push r15
+  // push r8
+  shellcode.AddBytes( { 0x41, 0x50 } );
+  // push r9
+  shellcode.AddBytes( { 0x41, 0x51 } );
+  // push r10
+  shellcode.AddBytes( { 0x41, 0x52 } );
+  // push r11
+  shellcode.AddBytes( { 0x41, 0x53 } );
+  // push r12
+  shellcode.AddBytes( { 0x41, 0x54 } );
+  // push r13
+  shellcode.AddBytes( { 0x41, 0x55 } );
+  // push r14
+  shellcode.AddBytes( { 0x41, 0x56 } );
+  // push r15
+  shellcode.AddBytes( { 0x41, 0x57 } );
 
   // sub rsp, 200 (MAX_PUSHES * sizeof(uint32_t))
   shellcode.AddBytes( { 0x48, 0x81, 0xEC, 0xC8, 0x00, 0x00, 0x00 } );
 
-  // push esp
+  // push rsp
   shellcode.AddByte( 0x54 );
 
-  shellcode.AddBytes( { 0x81, 0x04, 0x24, 0xC8, 0x00, 0x00,
-                        0x00 } );  // add dword ptr [esp], 0x200
+  // add dword ptr [rsp], 0xC8
+  shellcode.AddBytes( { 0x81, 0x04, 0x24, 0xC8, 0x00, 0x00, 0x00 } );
 
-  // Allocate stack space for the function call, the stack space depends on how many arguments the call has
-  // in this case it has 4, so i dont know
-  // sub rsp, 100h
+  // sub rsp, 0x100
   shellcode.AddBytes( { 0x48, 0x81, 0xEC, 0x00, 0x01, 0x00, 0x00 } );
 
-  // mov r9, 0 (4th argument)
+  // mov r9, Imagebase
   shellcode.AddBytes( { 0x49, 0xB9 } );
   shellcode.AddVariable<uint64_t>( image_base, ImageBaseVariable );
 
-  // push eip (x64 way)
   // mov r8, 4 byte variabe (3rd argument)
   shellcode.AddBytes( { 0x41, 0xB8 } );
   shellcode.AddVariable<uint32_t>( 0, VmOpcodeEncryptionKeyVariable );
 
-  // push esp (x64 way)
   // mov rdx, rsp (2nd argument)
   shellcode.AddBytes( { 0x48, 0x8B, 0xD4 } );
 
@@ -974,74 +1094,76 @@ Shellcode GetX64LoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
   shellcode.AddBytes( { 0x48, 0xB9 } );
   shellcode.AddVariable<uint64_t>( 0, VmCodeAddrVariable );
 
-  shellcode.AddByte( 0xE8 );  // call
+  // call
+  shellcode.AddByte( 0xE8 );
   shellcode.AddVariable( 0, VmCoreFunctionVariable );
 
-  // De-Allocate stack space for the function call, the stack space depends on how many arguments the call has
-  // in this case it has 4, so i dont know
-  // add rsp, 100h
+  // add rsp, 0x100
   shellcode.AddBytes( { 0x48, 0x81, 0xC4, 0x00, 0x01, 0x00, 0x00 } );
 
-  shellcode.AddByte( 0x5C );  // pop esp
+  // pop esp
+  shellcode.AddByte( 0x5C );
 
-  shellcode.AddBytes( { 0x41, 0x5F } );  // pop r15
-  shellcode.AddBytes( { 0x41, 0x5E } );  // pop r14
-  shellcode.AddBytes( { 0x41, 0x5D } );  // pop r13
-  shellcode.AddBytes( { 0x41, 0x5C } );  // pop r12
-  shellcode.AddBytes( { 0x41, 0x5B } );  // pop r11
-  shellcode.AddBytes( { 0x41, 0x5A } );  // pop r10
-  shellcode.AddBytes( { 0x41, 0x59 } );  // pop r9
-  shellcode.AddBytes( { 0x41, 0x58 } );  // pop r8
+  // pop r15
+  shellcode.AddBytes( { 0x41, 0x5F } );
+  // pop r14
+  shellcode.AddBytes( { 0x41, 0x5E } );
+  // pop r13
+  shellcode.AddBytes( { 0x41, 0x5D } );
+  // pop r12
+  shellcode.AddBytes( { 0x41, 0x5C } );
+  // pop r11
+  shellcode.AddBytes( { 0x41, 0x5B } );
+  // pop r10
+  shellcode.AddBytes( { 0x41, 0x5A } );
+  // pop r9
+  shellcode.AddBytes( { 0x41, 0x59 } );
+  // pop r8
+  shellcode.AddBytes( { 0x41, 0x58 } );
 
-  // pop xmm0
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x6F, 0x04, 0x24 } );  // movdqu xmm0, xmmword ptr ss:[rsp]
-  shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x10 } );  // add rsp, 0x16
+  // movdqu xmm0, xmmword ptr ss:[rsp]
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x6F, 0x04, 0x24 } );
 
-  // pop xmm1
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x6F, 0x0C, 0x24 } );  // movdqu xmm1, xmmword ptr ss:[rsp]
-  shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x10 } );  // add rsp, 0x16
+  // movdqu xmm1, xmmword ptr ss:[rsp+0x10]
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x6F, 0x4C, 0x24, 0x10 } );
 
-  // pop xmm2
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x6F, 0x14, 0x24 } );  // movdqu xmm2, xmmword ptr ss:[rsp]
-  shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x10 } );  // add rsp, 0x16
+  // movdqu xmm2, xmmword ptr ss:[rsp+0x20]
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x6F, 0x54, 0x24, 0x20 } );
 
-  // pop xmm3
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x6F, 0x1C, 0x24 } );  // movdqu xmm3, xmmword ptr ss:[rsp]
-  shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x10 } );  // add rsp, 0x16
+  // movdqu xmm3, xmmword ptr ss:[rsp+0x30]
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x6F, 0x5C, 0x24, 0x30 } );
 
-  // pop xmm4
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x6F, 0x24, 0x24 } );  // movdqu xmm4, xmmword ptr ss:[rsp]
-  shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x10 } );  // add rsp, 0x16
+  // movdqu xmm4, xmmword ptr ss:[rsp+0x40]
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x6F, 0x64, 0x24, 0x40 } );
 
-  // pop xmm5
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x6F, 0x2C, 0x24 } );  // movdqu xmm5, xmmword ptr ss:[rsp]
-  shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x10 } );  // add rsp, 0x16
+  // movdqu xmm5, xmmword ptr ss:[rsp+0x50]
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x6F, 0x6C, 0x24, 0x50 } );
 
-  // pop xmm6
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x6F, 0x34, 0x24 } );  // movdqu xmm6, xmmword ptr ss:[rsp]
-  shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x10 } );  // add rsp, 0x16
+  // movdqu xmm6, xmmword ptr ss:[rsp+0x60]
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x6F, 0x74, 0x24, 0x60 } );
 
-  // pop xmm7
-  shellcode.AddBytes(
-      { 0xF3, 0x0F, 0x6F, 0x3C, 0x24 } );  // movdqu xmm7, xmmword ptr ss:[rsp]
-  shellcode.AddBytes( { 0x48, 0x83, 0xC4, 0x10 } );  // add rsp, 0x16
+  // movdqu xmm7, xmmword ptr ss:[rsp+0x70]
+  shellcode.AddBytes( { 0xF3, 0x0F, 0x6F, 0x7C, 0x24, 0x70 } );
 
-  shellcode.AddByte( 0x5F );  // pop edi
-  shellcode.AddByte( 0x5E );  // pop esi
-  shellcode.AddByte( 0x5D );  // pop ebp
-  shellcode.AddByte( 0x5A );  // pop edx
-  shellcode.AddByte( 0x59 );  // pop ecx
-  shellcode.AddByte( 0x5B );  // pop ebx
-  shellcode.AddByte( 0x58 );  // pop eax
+  // add rsp, 0x80
+  shellcode.AddBytes( { 0x48, 0x81, 0xC4, 0x80, 0x00, 0x00, 0x00 } );
 
-  shellcode.AddByte( 0x9D );  // popfd
+  // pop edi
+  shellcode.AddByte( 0x5F );
+  // pop esi
+  shellcode.AddByte( 0x5E );
+  // pop ebp
+  shellcode.AddByte( 0x5D );
+  // pop edx
+  shellcode.AddByte( 0x5A );
+  // pop ecx
+  shellcode.AddByte( 0x59 );
+  // pop ebx
+  shellcode.AddByte( 0x5B );
+  // pop eax
+  shellcode.AddByte( 0x58 );
+  // popfd
+  shellcode.AddByte( 0x9D );
 
   if ( vm_opcode == VmOpcodes::CALL_IMMEDIATE ) {
     // push rax
@@ -1097,7 +1219,8 @@ Shellcode GetX64LoaderShellcodeForVirtualizedCode( const cs_insn& instruction,
     shellcode.AddByte( 0xC3 );
   }
 
-  shellcode.AddByte( 0xE9 );  // jmp
+  // jmp
+  shellcode.AddByte( 0xE9 );
   shellcode.AddVariable( 0, OrigAddrVariable );
 
   return shellcode;
