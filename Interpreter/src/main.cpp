@@ -298,12 +298,16 @@ void FixImports( uint8_t* dll_base_addr,
           ++original_thunk, ++first_thunk ) {
       uintptr_t import_function_address = 0;
 
-      if ( IMAGE_SNAP_BY_ORDINAL( original_thunk->u1.Ordinal ) ) {
+      const bool by_ordinal =
+          IMAGE_SNAP_BY_ORDINAL( original_thunk->u1.Ordinal );
+
+      if ( by_ordinal ) {
         // TODO: Replace with my own get proc address, support ordinal tho
+        const auto ordinal = IMAGE_ORDINAL( original_thunk->u1.Ordinal );
+
         import_function_address =
             reinterpret_cast<uintptr_t>( apis.GetProcAddress(
-                dll_instance, reinterpret_cast<char*>(
-                                  LOWORD( original_thunk->u1.Ordinal ) ) ) );
+                dll_instance, reinterpret_cast<char*>( ordinal ) ) );
       } else {
         const auto import_by_name = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
             dll_base_addr + original_thunk->u1.AddressOfData );
@@ -688,7 +692,6 @@ __declspec( dllexport ) int32_t
 
   switch ( static_cast<VmOpcodes>( vm_opcode ) ) {
     case VmOpcodes::MOV_REGISTER_MEMORY_REG_OFFSET: {
-      // Read the next 4 bytes as uint32_t
       const auto vm_reg_dest = ReadValue<VmRegister>( &code );
       const auto vm_reg_src = ReadValue<VmRegister>( &code );
 

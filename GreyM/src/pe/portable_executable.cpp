@@ -242,9 +242,29 @@ std::vector<Import> PortableExecutable::GetImports() const {
           function_address += sizeof( import_descriptor->FirstThunk ) ) {
       assert( original_thunk );
 
-      if ( IMAGE_SNAP_BY_ORDINAL( original_thunk->u1.Ordinal ) ) {
-        throw std::runtime_error(
-            "Import ordinal case has not yet been handled" );
+      const bool by_ordinal =
+          IMAGE_SNAP_BY_ORDINAL( original_thunk->u1.Ordinal );
+
+      if ( by_ordinal ) {
+        const auto ordinal = IMAGE_ORDINAL( original_thunk->u1.Ordinal );
+
+        assert( ordinal );
+
+        /*
+          NOTE: (TODO)
+          Because we currently do not use the imports in any important way.
+          We only care about how many there are.
+          Do not care out handling the ordinal properly now.
+          Fo that shi bruhh
+        */
+
+        Import import;
+        import.associated_module = "";
+        import.function_addr_rva = 0;
+        import.function_name = "";
+        import.ordinal = true;
+
+        imports.push_back( import );
       } else {
         // Read the import info in that thunk
         const auto import_name = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
@@ -256,6 +276,7 @@ std::vector<Import> PortableExecutable::GetImports() const {
           import.associated_module = associated_dll_name;
           import.function_addr_rva = function_address;
           import.function_name = import_name->Name;
+          import.ordinal = false;
         }
 
         imports.push_back( import );

@@ -22,6 +22,7 @@ struct Import {
   std::string associated_module;
   std::string function_name;
   DWORD function_addr_rva;
+  bool ordinal;
 };
 
 struct Relocation {
