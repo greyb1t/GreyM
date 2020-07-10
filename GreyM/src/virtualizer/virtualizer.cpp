@@ -412,9 +412,6 @@ Shellcode CreateVirtualizedShellcode(
         Meaning that it is relative to the address the instrution lies on.
         Therefore I need to calculate the absolute call address relative to the image base
 
-        How did I manage to come up with formula for that?
-        Basic math equation rules
-
         I made the following equation with what values I had:
           abs_dest_call - rip = relative_call_addr + 6
 

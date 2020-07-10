@@ -936,7 +936,9 @@ void ApplyFixups( PortableExecutable* pe,
   }
 
   // NOTE: This is not fully tested, may cause issues
-  rtti_obfuscator::ObfuscateRTTI( pe );
+  // Why? If the software has a string that contains the following pattern: .?AV
+  // It will randomize that string, NOT GOOD.
+  //rtti_obfuscator::ObfuscateRTTI( pe );
 
   const auto nullify_pe_directory = []( PortableExecutable* pe,
                                         IMAGE_NT_HEADERS* nt_headers,
@@ -1171,8 +1173,6 @@ void EachInstructionCallback( const cs_insn& instruction,
           .push_back( loader_shellcode_offset +
                       vm_var_section_shellcode_offset );
       ///////////////
-
-      // WriteJump(IMAGE_SECTION_HEADER* section, instruction_address)
 
       uintptr_t section_offset = 0;
       uint8_t* section_data = 0;
@@ -1725,6 +1725,9 @@ PortableExecutable Protect( PortableExecutable original_pe ) {
       original_pe_nt_headers->OptionalHeader.AddressOfEntryPoint;
 
   // TODO: Add this as an option for the user
+  // Why? It can cause issues for some software such as PE-bear with QTcore
+  // and my flyff bot, failing to select monsters..?
+  // I have not investigated further
   vm_code_section_data.redirect_imports = true;
 
   memset( vm_code_section_data.zeroed_data_for_import_directory, 0,
