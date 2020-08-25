@@ -32,6 +32,14 @@ using LoadLibraryA_t = decltype( &LoadLibraryA );
 using GetProcAddress_t = decltype( &GetProcAddress );
 using VirtualProtect_t = decltype( &VirtualProtect );
 using VirtualAlloc_t = decltype( &VirtualAlloc );
+using DbgUiRemoteBreakin_t = VOID ( * )();
+using DbgBreakPoint_t = VOID ( * )();
+using CreateFileW_t = decltype( &CreateFileW );
+using CloseHandle_t = decltype( &CloseHandle );
+using CreateFileMappingA_t = decltype( &CreateFileMappingA );
+using MapViewOfFile_t = decltype( &MapViewOfFile );
+using UnmapViewOfFile_t = decltype( &UnmapViewOfFile );
+using SetFilePointer_t = decltype( &SetFilePointer );
 
 struct Modules {
   uintptr_t ntdll;
@@ -43,6 +51,14 @@ struct ApiAddresses {
   GetProcAddress_t GetProcAddress;
   VirtualProtect_t VirtualProtect;
   VirtualAlloc_t VirtualAlloc;
+  DbgUiRemoteBreakin_t DbgUiRemoteBreakin;
+  DbgBreakPoint_t DbgBreakPoint;
+  CreateFileW_t CreateFileW;
+  CloseHandle_t CloseHandle;
+  CreateFileMappingA_t CreateFileMappingA;
+  MapViewOfFile_t MapViewOfFile;
+  UnmapViewOfFile_t UnmapViewOfFile;
+  SetFilePointer_t SetFilePointer;
 };
 
 IMAGE_NT_HEADERS* GetNtHeaders( const PVOID base ) {
@@ -170,6 +186,17 @@ void MemoryCopy( uint8_t* src, uint8_t* dest, int size ) {
     ++src;
     ++dest;
   }
+}
+
+LDR_DATA_TABLE_ENTRY* GetMainModule() {
+  const auto peb = GetCurrentPeb();
+
+  const auto head = &peb->Ldr->InLoadOrderModuleList;
+
+  const auto first_entry =
+      reinterpret_cast<LDR_DATA_TABLE_ENTRY*>( head->Flink );
+
+  return first_entry;
 }
 
 uintptr_t GetModule( const uintptr_t module_name_hash ) {
@@ -378,32 +405,23 @@ void FixImports( uint8_t* dll_base_addr,
 
 void AntiAttachDebugger( const Modules& module_addresses,
                          const ApiAddresses& apis ) {
-  constexpr auto dbg_ui_remote_breakin_hash =
-      HashString( "DbgUiRemoteBreakin" );
-  const auto dbg_ui_remote_breakin =
-      GetExport( module_addresses.ntdll, dbg_ui_remote_breakin_hash );
-
-  constexpr auto dbg_break_point_hash = HashString( "DbgBreakPoint" );
-  const auto dbg_breakpoint =
-      GetExport( module_addresses.ntdll, dbg_break_point_hash );
-
   DWORD old_protection;
-  apis.VirtualProtect( reinterpret_cast<LPVOID>( dbg_ui_remote_breakin ), 1,
+  apis.VirtualProtect( reinterpret_cast<LPVOID>( apis.DbgUiRemoteBreakin ), 1,
                        PAGE_READWRITE, &old_protection );
 
   // ret
-  *reinterpret_cast<uint8_t*>( dbg_ui_remote_breakin ) = 0xC3;
+  *reinterpret_cast<uint8_t*>( apis.DbgUiRemoteBreakin ) = 0xC3;
 
-  apis.VirtualProtect( reinterpret_cast<LPVOID>( dbg_ui_remote_breakin ), 1,
+  apis.VirtualProtect( reinterpret_cast<LPVOID>( apis.DbgUiRemoteBreakin ), 1,
                        old_protection, &old_protection );
 
-  apis.VirtualProtect( reinterpret_cast<LPVOID>( dbg_breakpoint ), 1,
+  apis.VirtualProtect( reinterpret_cast<LPVOID>( apis.DbgBreakPoint ), 1,
                        PAGE_READWRITE, &old_protection );
 
   // ret
-  *reinterpret_cast<uint8_t*>( dbg_breakpoint ) = 0xC3;
+  *reinterpret_cast<uint8_t*>( apis.DbgBreakPoint ) = 0xC3;
 
-  apis.VirtualProtect( reinterpret_cast<LPVOID>( dbg_breakpoint ), 1,
+  apis.VirtualProtect( reinterpret_cast<LPVOID>( apis.DbgBreakPoint ), 1,
                        old_protection, &old_protection );
 }
 
@@ -442,14 +460,107 @@ ApiAddresses InitializeApis( const Modules& modules ) {
   const auto virtual_alloc = reinterpret_cast<decltype( &VirtualAlloc )>(
       GetExport( kernel32, virtual_alloc_hash ) );
 
+  constexpr auto dbg_ui_remote_breakin_hash =
+      HashString( "DbgUiRemoteBreakin" );
+  const auto dbg_ui_remote_breakin = reinterpret_cast<DbgUiRemoteBreakin_t>(
+      GetExport( ntdll, dbg_ui_remote_breakin_hash ) );
+
+  constexpr auto dbg_break_point_hash = HashString( "DbgBreakPoint" );
+  const auto dbg_breakpoint = reinterpret_cast<DbgBreakPoint_t>(
+      GetExport( ntdll, dbg_break_point_hash ) );
+
+  constexpr auto create_file_hash = HashString( "CreateFileW" );
+  const auto create_file_w = reinterpret_cast<CreateFileW_t>(
+      GetExport( kernel32, create_file_hash ) );
+
+  constexpr auto close_handle_hash = HashString( "CloseHandle" );
+  const auto close_handle = reinterpret_cast<CloseHandle_t>(
+      GetExport( kernel32, close_handle_hash ) );
+
+  constexpr auto create_file_mapping_a_hash =
+      HashString( "CreateFileMappingA" );
+  const auto create_file_mapping_a = reinterpret_cast<CreateFileMappingA_t>(
+      GetExport( kernel32, create_file_mapping_a_hash ) );
+
+  constexpr auto map_view_of_file_hash = HashString( "MapViewOfFile" );
+  const auto map_view_of_file = reinterpret_cast<MapViewOfFile_t>(
+      GetExport( kernel32, map_view_of_file_hash ) );
+
+  constexpr auto unmap_view_of_file_hash = HashString( "UnmapViewOfFile" );
+  const auto unmap_view_of_file = reinterpret_cast<UnmapViewOfFile_t>(
+      GetExport( kernel32, unmap_view_of_file_hash ) );
+
+  constexpr auto set_file_pointer_hash = HashString( "SetFilePointer" );
+  const auto set_file_pointer = reinterpret_cast<SetFilePointer_t>(
+      GetExport( kernel32, set_file_pointer_hash ) );
+
   ApiAddresses apis;
 
   apis.GetProcAddress = get_proc_address;
   apis.LoadLibraryA = load_library_a;
   apis.VirtualProtect = virtual_protect;
   apis.VirtualAlloc = virtual_alloc;
+  apis.DbgUiRemoteBreakin = dbg_ui_remote_breakin;
+  apis.DbgBreakPoint = dbg_breakpoint;
+  apis.CreateFileW = create_file_w;
+  apis.CloseHandle = close_handle;
+  apis.CreateFileMappingA = create_file_mapping_a;
+  apis.MapViewOfFile = map_view_of_file;
+  apis.UnmapViewOfFile = unmap_view_of_file;
+  apis.SetFilePointer = set_file_pointer;
 
   return apis;
+}
+
+// Returns true if this file's integrity is okay, false otherwise
+bool CheckFileIntegrity( const ApiAddresses& apis ) {
+  return true;
+
+  const auto main_module_ldr_entry = GetMainModule();
+
+  // NOTE: This assumes the ldr entry FullDllName.Buffer is null-terminated
+  const auto file_handle =
+      apis.CreateFileW( ( wchar_t* )main_module_ldr_entry->FullDllName.Buffer,
+                        GENERIC_READ, FILE_SHARE_WRITE | FILE_SHARE_READ, NULL,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
+
+  if ( file_handle == INVALID_HANDLE_VALUE ) {
+    return false;
+  }
+
+  const auto file_size =
+      apis.SetFilePointer( file_handle, NULL, NULL, FILE_END );
+
+  if ( file_size == INVALID_SET_FILE_POINTER ) {
+    CloseHandle( file_handle );
+    return false;
+  }
+
+  const auto mapped_file_handle =
+      apis.CreateFileMappingA( file_handle, NULL, PAGE_READONLY, 0, 0, NULL );
+
+  if ( mapped_file_handle == NULL ) {
+    CloseHandle( file_handle );
+    return false;
+  }
+
+  const auto mapped_file_addr =
+      apis.MapViewOfFile( mapped_file_handle, FILE_MAP_READ, 0, 0, 0 );
+
+  if ( mapped_file_addr == NULL ) {
+    CloseHandle( mapped_file_handle );
+    CloseHandle( file_handle );
+    return false;
+  }
+
+  // calulate the checksum here
+
+  apis.UnmapViewOfFile( mapped_file_addr );
+
+  CloseHandle( mapped_file_handle );
+  CloseHandle( file_handle );
+
+  return true;
 }
 
 __declspec( dllexport ) void NTAPI
@@ -538,6 +649,17 @@ __declspec( dllexport ) uintptr_t
 {
   const auto vm_code_section_data =
       GetVmCodeSectionData( reinterpret_cast<PVOID>( dll_base ) );
+
+  const auto modules = GetModules();
+  const auto apis = InitializeApis( modules );
+
+#if ENABLE_FILE_INTEGRITY_CHECKS
+  if ( !CheckFileIntegrity( apis ) ) {
+    // TODO: Think of something better to return to make
+    // it obfuscated, or mayybe something even smarter?
+    return 0;
+  }
+#endif
 
   // Return the real entrypoint address for the entrypoint shellcode to call
   return dll_base + vm_code_section_data->real_entrypoint;

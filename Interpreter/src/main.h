@@ -8,6 +8,7 @@
 #define VM_INTERPRETER_STACK_ALLOCATION_SIZE_BYTES 200
 
 #define ENABLE_TLS_CALLBACKS TRUE
+#define ENABLE_FILE_INTEGRITY_CHECKS TRUE
 
 // The data at the beginning of the vm code section
 struct VmCodeSectionData {
