@@ -251,7 +251,11 @@ __declspec( dllexport )
 */
 
 int main() {
-  static std::vector<int> test_static_tls_data_temp_var = { 1337, 1338 };
+  static std::vector<int> test_static_tls_data_temp_var = {
+    1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338,
+    1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338,
+    1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338, 1338,
+  };
 
   // If the static tls initialization call above does not work properly, inform us about that shits
   //
@@ -265,10 +269,10 @@ int main() {
   }
 
   static std::vector<int> test_static_tls_data_temp_var2 = {
-    1337, 1338, 1337, 2338, 1337, 1638, 1337, 1338, 1337, 1338,
-    1337, 1138, 1337, 2338, 1337, 1638, 1337, 1738, 1337, 1338,
-    1337, 1138, 1337, 2338, 1337, 1638, 1337, 1738, 1337, 1338,
-    1337, 1338, 1337, 2338, 1337, 1638, 1337, 1338, 1337, 1338,
+    1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337,
+    1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337,
+    1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337,
+    1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337, 1337
   };
 
   // If the static tls initialization call above does not work properly, inform us about that shits
@@ -282,11 +286,32 @@ int main() {
     return -1;
   }
 
+  static std::vector<int> test_static_tls_data_temp_var3 = {
+    1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339,
+    1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339,
+    1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339, 1339,
+  };
+
+  // If the static tls initialization call above does not work properly, inform us about that shits
+  //
+  if ( test_static_tls_data_temp_var3.size() == 0 ) {
+    MessageBox( 0,
+                TEXT( "Static tls data is not working properly, have you "
+                      "initialized it?" ),
+                TEXT( "ds" ), 0 );
+
+    return -1;
+  }
+
   for ( auto lol : test_static_tls_data_temp_var ) {
     std::cout << lol << std::endl;
   }
 
   for ( auto lol : test_static_tls_data_temp_var2 ) {
+    std::cout << lol << std::endl;
+  }
+
+  for ( auto lol : test_static_tls_data_temp_var3 ) {
     std::cout << lol << std::endl;
   }
 
