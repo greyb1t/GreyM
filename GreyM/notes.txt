@@ -1,10 +1,23 @@
-CONTINUE HERE:
-	What did I do last time?
-	I added the TLS callbacks and it works fine.
-	But, not for the RIMJOB DLL that calls the LdrpStaticTls...
-	That does not work for some reason, no error message either
+TODO: Virtualize branch redirection. E.g. JE, JNE
+How? Keep information about where to jump, how big the instruction is, if not jump.
 
-IAT REDIRECTION: https://forum.exetools.com/showthread.php?t=13620
+Add code that executes before entry point. Why?
+In case for some reason, someone removed the TLS callbacks, we have to ensure that they were called
+to prevent someone from fixing up imports themselves.
+Add the integrity checks there as well.
+
+Turn all VM instructions into universal instructions, meaning:
+a struct that all instructions are, including the size, maybe?
+
+https://github.com/corkami/docs/blob/master/PE/PE.md
+
+IN TLS CALLBACKS:
+Create new thread that checks for debugger, but make it ThreadHideFromDebugger
+Ensure that it is hidden from debugger, otherwise, close program?
+
+USE ANTI DEBUGGING METHOD FROM GWINMEM_TEST
+VERY GOOD, ALSO AGAINST SCYLLA
+
 
 IN THE LOADER SHELLCODE, INSTEAD OF ONLY CALL[RSP-8], RANDOMIZE IT BETWEEN A CALL AND A JUMP THAT SIMULATED A CALL BY PUSHING RET ADD TO STACK
 
@@ -15,25 +28,14 @@ Dynamically add a new TLS callback
 
 OBJECTIVE
 
-Remove imports in tls callback
-
-Dynamically resolve them only if the imports are from native dlls, dont want to handle api sets
-
-
 TODO:
-	Add TLS callback
 	Make the TLS callback add dynamic callback that executes code against debugger and shit
-
-TODO: Consider using custom relocations instead, to when reversing in IDA, addresses would not be relocated to base address
-	Example: Put all relocations in a specific section and relocate them in a TLS callback instead
 
 TODO: Replace the pdb path with a link or something funny
 
 TODO: Consider turning every instruction into several instructions
 	Turn into garbage code?
 	Turn into code that does one thing, than later on after more garbage is undoes that thing?
-
-TODO: Find a better solution to find the default pe image base address, currently I am defining DLL in Interpreter main.h and hardcode the values
 
 TODO: All the INT3 instructions between functions can be replaced with
 BOGUS code to catch of disassemblers.
