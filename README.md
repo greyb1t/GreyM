@@ -1,5 +1,5 @@
 # GreyM
-Me fockin' EXE protector
+Me fockin' EXE protector (unfinished)
 
 * Recursive disassembly
 * Virtualizes instructions and interprets them in runtime
