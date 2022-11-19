@@ -8,3 +8,6 @@ Me fockin' EXE protector
 * Anti debugging
 * Anti dumping
 * RTTI obfuscation
+
+Entrypoint after running protector
+![alt text](https://i.imgur.com/v8uozhN.png)
